@@ -410,6 +410,7 @@ def _incident_line(
         "time_to_fix_wall_s": record["time_to_fix_s"],
         "fix_elapsed_wall_s": record["elapsed_s"],
         "deploy": result["status"],
+        "to_a_person": result["status"] != "deployed",
         "refused": result["refused"],
         "decision": result["decision"],
         "release": release.get("id"),
@@ -466,6 +467,7 @@ def summary(loops: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "incidents": len(incidents),
         "outcomes": dict(sorted(Counter(i["outcome"] for i in incidents).items())),
         "deploys": dict(sorted(Counter(i["deploy"] for i in incidents).items())),
+        "to_a_person": sum(1 for i in incidents if i["to_a_person"]),
         "recurred_next_day": sum(1 for i in incidents if (i["next_day"] or {}).get("recurred")),
         "refusals_by_layer": layers,
         "weakening_by_category": dict(sorted(weak.items())),
@@ -570,6 +572,7 @@ def markdown(r: Mapping[str, Any]) -> str:
         f"- Incidents fixed or handed on: {s['incidents']}; fix outcomes "
         + (", ".join(f"{k} {v}" for k, v in s["outcomes"].items()) or "none"),
         "- Deploys: " + (", ".join(f"{k} {v}" for k, v in s["deploys"].items()) or "none"),
+        f"- Left with a person (refused or declined, so not deployed): {s['to_a_person']}",
         f"- The same root on the next day: {s['recurred_next_day']} of {s['incidents']}",
         f"- Honesty flags: {s['honesty_flags']}",
         "",
