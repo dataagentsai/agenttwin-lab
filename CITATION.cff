@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use this work, please cite it as below."
+type: software
+title: "AgentTwin Lab: an agent runs simulated days in an AgentTwin world, and the world watches it"
+version: "0.1.0"
+date-released: "2026-10-11"
+authors:
+  - given-names: Basant
+    family-names: Choudhary
+    affiliation: "DataAgents.ai"
+repository-code: "https://github.com/dataagentsai/agenttwin-lab"
+url: "https://github.com/dataagentsai/agenttwin-lab"
+abstract: >-
+  A lab around AgentTwin: the agent under test runs whole simulated days, in process, against a declared world with a generated population, customers arriving on a curve and incidents on the world's calendar, while the world judges every action and reply as it happens and raises each violation as an incident with its evidence. Part of Clean AI Engineering.
+keywords:
+  - AI agents
+  - simulation
+  - agent evaluation
+  - runtime monitoring
+  - long-running agents
+  - digital twin
+license: Apache-2.0
+references:
+  - type: software
+    title: "AgentTwin: a world-description format and simulator for testing AI agents"
+    repository-code: "https://github.com/dataagentsai/agenttwin"
+    authors:
+      - given-names: Basant
+        family-names: Choudhary

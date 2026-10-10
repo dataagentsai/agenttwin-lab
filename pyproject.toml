@@ -1,0 +1,70 @@
+[project]
+name = "agenttwin-lab"
+version = "0.1.0"
+description = "AgentTwin Lab: an agent runs simulated days in an AgentTwin world, and the world watches it."
+requires-python = ">=3.13"
+license = "Apache-2.0"
+dependencies = [
+    # The world and its monitor. AgentTwin keeps the format, the projection
+    # and the oracles; the lab only wires them (ADOPTION.md, "The one constraint").
+    "agenttwin",
+    # The agent under test, and the harness it is built on (a workspace member
+    # of reference-agent, installed by path the way claims-fnol-azure does).
+    "support-agent",
+    "agent-harness",
+    # Adopted, each behind a seam in `agenttwin_lab.ports`.
+    "simpy>=4.1",          # the day's event schedule
+    "time-machine>=2.15",  # the agent process's wall clock follows the world's
+    "faker>=30.0",         # the population (en_IN)
+    "opentelemetry-sdk>=1.27",  # deterministic trace ids per turn
+    "pyyaml>=6.0",
+    # Never imported by the lab. Pinned to the version whose test server is
+    # cached on this laptop, as claims-fnol-azure does, so nothing downloads one.
+    "temporalio==1.33.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+    "mypy>=1.13",
+    "types-PyYAML>=6.0",
+]
+
+[project.scripts]
+agenttwin-lab = "agenttwin_lab.__main__:main"
+
+[tool.uv.sources]
+agenttwin = { path = "../agenttwin", editable = true }
+support-agent = { path = "../reference-agent", editable = true }
+agent-harness = { path = "../reference-agent/packages/agent-harness", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agenttwin_lab"]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "TID"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["src/agenttwin_lab"]
+# The packages the lab wires are typed in their own repositories; the adopted
+# libraries below ship no stubs.
+[[tool.mypy.overrides]]
+module = ["simpy", "simpy.*", "faker", "faker.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+testpaths = ["tests"]

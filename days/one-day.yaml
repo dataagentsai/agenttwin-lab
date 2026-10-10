@@ -1,0 +1,48 @@
+# One simulated day at the clothing store: who it holds, who comes, and what
+# the customers hit by the world's calendar do about it.
+#
+# Every reason below is one the reference agent answers without a model call
+# (P-DIRECT, P-OPEN, the handoff and refusal rules), so a day costs nothing and
+# repeats exactly. Reasons the agent answers through its model loop (cancel,
+# return, address change, a refund request) wait for a scripted model policy;
+# README, "What the day leaves out".
+
+day:
+  start: "2026-11-02T00:00:00+05:30"   # a Monday, India time
+  length: 1d
+  think: 45s                           # a customer reads and types
+
+population:
+  locale: en_IN
+  customers: 60
+  orders_per_customer: [1, 3]
+  status: {pending: 2, confirmed: 1, picked: 1, shipped: 2, out_for_delivery: 2, delivered: 4, cancelled: 1}
+  at_least: {out_for_delivery: 6}       # the carrier's incident needs parcels on vans
+  total: [499, 9999]
+  final_sale: 0.1
+
+arrivals:
+  visits: 30
+  # Relative arrivals per hour, midnight to midnight: quiet at night, a
+  # morning rise, a lunchtime bump and an evening peak.
+  curve: [0.2, 0.1, 0.1, 0.1, 0.1, 0.2, 0.5, 1, 2, 3, 3, 3, 4, 3, 3, 3, 3, 3, 4, 5, 5, 4, 2, 1]
+  reasons:
+    order_status:  {weight: 6, says: ["where is my order {order}"]}
+    refund_status: {weight: 2, says: ["has the refund for {order} been processed"]}
+    discount:      {weight: 1, says: ["can you give me a discount code?"]}
+    person:        {weight: 1, says: ["I want to talk to a person"]}
+
+reactions:
+  # The customers whose parcels the carrier marked delivered. They ask where the
+  # order is, and if they are told it was delivered, they say it never came.
+  carrier-marks-undelivered-parcels-delivered:
+    after: [2h, 6h]
+    opening: "where is my order {order}"
+    rules:
+      - {when: "delivered", say: "but my parcel {order} never came, it never arrived"}
+    max_turns: 3
+
+monitor:
+  # No AOAS states when an owed action is due; the monitor is told.
+  owed_within: 4h
+  tick_every: 1h

@@ -1,0 +1,62 @@
+# The clothing store for one simulated day, with one incident planted.
+#
+# At ten in the morning the carrier marks three parcels delivered that are
+# still on its vans (grant slice 3.2). The order system's record says
+# `delivered`; the world keeps the truth, `out_for_delivery`. The customers
+# whose parcels they are write in a few hours later (the day plan's reaction).
+#
+# Everything else is `clothing-day-clean.yaml`, the control.
+
+apiVersion: awd/v0
+name: clothing-day
+version: 1
+seed: 20261102
+
+spec:
+  aoas: support-agent-clothing
+  version: 0.1.0
+  path: ../../clean-ai-engineering/drafts/examples/support-agent.aoas.yaml
+
+fidelity:
+  faithful_about:
+    - order.status and the transitions between states
+    - the return window, in whole days since delivery
+    - which actions are irreversible
+  not_faithful_about:
+    - names, emails, phone numbers and addresses (Faker, en_IN)
+    - carrier names and real delivery timing
+    - payment authorisation and settlement
+  verified_against: null
+
+systems:
+  ecom:
+    projects: order_system
+    resolution: mock
+    presents:
+      get_order:
+        description: Look up an order's current status.
+      cancel_order:
+        description: Cancel an order. Only possible before it has been picked.
+        refusal: an order that is {status} can no longer be cancelled
+      open_return_request:
+        description: Open a return. Delivered orders only, inside the window, not final sale.
+        refusal: "no new return can be opened for this order: it is {status}, and a return is already open: {return_open}"
+      change_address:
+        description: Change the delivery address. Only while the order is still pending.
+        refusal: the carrier owns the address once an order is {status}
+      issue_refund:
+        description: Issue a refund. Requires the elevated scope a granted approval mints.
+        refusal: this order has already been refunded
+
+calendar:
+  - id: carrier-marks-undelivered-parcels-delivered
+    at: 10h
+    by: carrier
+    entity: order
+    where: [{field: status, equals: [out_for_delivery]}]
+    pick: 3
+    sets: {status: delivered}
+    record_only: true
+    description: >-
+      The carrier's scan marks three parcels delivered that never arrived. The
+      order system believes it; the parcels are still out for delivery.
