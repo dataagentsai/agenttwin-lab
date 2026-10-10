@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -306,3 +308,112 @@ def test_the_yardstick_is_read_only_during_an_attempt(
     finally:
         lock.release()
     (tree / AGENT / "scenarios" / "a.yaml").write_text("writable again\n")
+
+
+# --------------------------------------------------------------------------- the runner's layer
+
+
+def _commit(cwd: Path, message: str = "x") -> None:
+    sh(cwd, "git", "add", "-A")
+    sh(cwd, "git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", message)
+
+
+@pytest.fixture
+def runner_lab(tmp_path: Path, sibling: Path) -> Iterator[dict[str, Any]]:
+    """A main checkout, the fixer's worktree of it, a base copy, a sibling copy."""
+    main = tmp_path / "main" / AGENT
+    for rel in ("scenarios/a.yaml", "src/a.py", "gates.yaml"):
+        (main / rel).parent.mkdir(parents=True, exist_ok=True)
+        (main / rel).write_text(f"{rel}\n")
+    sh(main, "git", "init", "-q")
+    _commit(main)
+    work = tmp_path / "work"
+    work.mkdir()
+    head = sh(main, "git", "rev-parse", "HEAD").strip()
+    tree, base = work / AGENT, work / "base" / AGENT
+    sh(main, "git", "worktree", "add", "-q", "-b", "fix/x", str(tree), head)
+    sh(main, "git", "worktree", "add", "-q", "--detach", str(base), head)
+    copy = sibling_copy("agenttwin", sibling, work / "agenttwin")
+    policy = Policy(
+        workdir=str(work),
+        protected=load_config().protected,
+        mains={AGENT: str(main), "agenttwin": str(sibling)},
+        log=str(tmp_path / "refusals.jsonl"),
+    )
+    yield {"main": main, "tree": tree, "base": base, "copy": copy, "policy": policy,
+           "head": head, "sibling": sibling}  # fmt: skip
+    copy.remove()
+
+
+def _secure(lab: dict[str, Any], before: dict[str, str]) -> list[dict[str, Any]]:
+    from agenttwin_lab import protect
+
+    return protect.secure(
+        lab["policy"], {AGENT: lab["tree"]}, {AGENT: lab["head"]},
+        copies=[lab["copy"]], bases={AGENT: lab["base"]},
+        tried=[{"tool": "Bash", "tool_use_id": "toolu_9", "command": "echo > scenarios/a.yaml",
+                "writes": [{"path": f"{AGENT}/scenarios/a.yaml"}]}],
+        attempt=1, layers_on=["permissions", "hook", "read-only", "runner"],
+        mains_before=before, mains={AGENT: lab["main"], "agenttwin": lab["sibling"]},
+    )  # fmt: skip
+
+
+def _unlock_copy(lab: dict[str, Any]) -> Path:
+    from agenttwin_lab.readonly import chmod_tree
+
+    chmod_tree(lab["copy"].path, writable=True)
+    return Path(lab["copy"].path)
+
+
+# (what got through, how, what the runner logs: (path, stopped, means), and the check after)
+RUNNER = [
+    ("a protected file changed",
+     lambda lab: (lab["tree"] / "scenarios/a.yaml").write_text("weakened\n"),
+     [(f"{AGENT}/scenarios/a.yaml", True, "shell")],
+     lambda lab: (lab["tree"] / "scenarios/a.yaml").read_text() == "scenarios/a.yaml\n"),
+    ("a protected file added",
+     lambda lab: (lab["tree"] / "scenarios/b.yaml").write_text("new\n"),
+     [(f"{AGENT}/scenarios/b.yaml", True, "unknown")],
+     lambda lab: not (lab["tree"] / "scenarios/b.yaml").exists()),
+    ("a protected file deleted",
+     lambda lab: (lab["tree"] / "gates.yaml").unlink(),
+     [(f"{AGENT}/gates.yaml", True, "unknown")],
+     lambda lab: (lab["tree"] / "gates.yaml").read_text() == "gates.yaml\n"),
+    ("the agent's code changed: not protected, left for the commit",
+     lambda lab: (lab["tree"] / "src/a.py").write_text("fixed\n"),
+     [],
+     lambda lab: (lab["tree"] / "src/a.py").read_text() == "fixed\n"),
+    ("a commit the fixer made itself, of a protected file",
+     lambda lab: ((lab["tree"] / "scenarios/a.yaml").write_text("weakened\n"),
+                  _commit(lab["tree"])),
+     [(AGENT, True, "git"), (f"{AGENT}/scenarios/a.yaml", True, "shell")],
+     lambda lab: sh(lab["tree"], "git", "rev-parse", "HEAD").strip() == lab["head"]
+     and (lab["tree"] / "scenarios/a.yaml").read_text() == "scenarios/a.yaml\n"),
+    ("a sibling copy changed",
+     lambda lab: (_unlock_copy(lab) / "agenttwin/truth.py").write_text("TRUE = False\n"),
+     [("agenttwin/agenttwin/truth.py", True, "unknown")],
+     lambda lab: (lab["copy"].path / "agenttwin/truth.py").read_text() == "TRUE = True\n"),
+    ("the base copy changed",
+     lambda lab: (lab["base"] / "src/a.py").write_text("tampered\n"),
+     [(f"base/{AGENT}/src/a.py", True, "unknown")],
+     lambda lab: (lab["base"] / "src/a.py").read_text() == "src/a.py\n"),
+    ("a main checkout changed: recorded, never reverted",
+     lambda lab: (lab["main"] / "src/a.py").write_text("owner's work\n"),
+     [("{main}", False, "unknown")],
+     lambda lab: (lab["main"] / "src/a.py").read_text() == "owner's work\n"),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(("name", "change", "logged", "after"), RUNNER, ids=[r[0] for r in RUNNER])
+def test_the_runner_reverts_what_got_through(
+    runner_lab: dict[str, Any], name: str, change: Any, logged: list[Any], after: Any
+) -> None:
+    from agenttwin_lab import protect
+
+    before = protect.snapshot({AGENT: runner_lab["main"], "agenttwin": runner_lab["sibling"]})
+    change(runner_lab)
+    entries = _secure(runner_lab, before)
+    want = [(p.format(main=runner_lab["main"]), s, m) for p, s, m in logged]
+    assert [(e["path"], e["stopped"], e["means"]) for e in entries] == want
+    assert all(e["layer"] == "runner" for e in entries)
+    assert after(runner_lab), name
