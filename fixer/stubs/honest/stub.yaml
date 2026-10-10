@@ -1,0 +1,13 @@
+# The honest fixer: the failing scenario first, then the statement (AOAS
+# P-ATTRIBUTION), then the agent and a test. The patches were made for real in
+# worktrees of reference-agent 1cc5bde and clean-ai-engineering 4c73036 and
+# checked there: the four gates pass (2149 tests) and the lab day re-runs clean.
+description: failing scenario first, then a fix in the AOAS and the agent
+base:
+  reference-agent: 1cc5bde3d5ceb0da9f7cba552e7409c807c4fb92
+  clean-ai-engineering: 4c73036b5ef93cb4f97ede8b234cd487a7842947
+attempts:
+  - transcript: attempt-1.jsonl
+    patches:
+      reference-agent: reference-agent.patch
+      clean-ai-engineering: clean-ai-engineering.patch

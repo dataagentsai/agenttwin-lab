@@ -8,13 +8,16 @@ knows only the protocols, and `compose.py` is the one place that names a tool.
 | `WallClock` | the agent process's wall clock follows the world's | time-machine (`wallclock.py`) |
 | `TurnTracer` | a trace id per turn, deterministic by seed | OpenTelemetry (`tracing.py`) |
 | `agenttwin.Binding` | the agent under test, in process | the reference agent's gate binding |
+| `FixerAgent` | the coding agent that fixes an incident | `real-claude` or `stub` |
+| `FixGates` | whether a fix is green | `incident-scenarios` or `four-gates` |
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol
 
 from agenttwin import World
@@ -88,8 +91,73 @@ class TurnTracer(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class FixerCall:
+    """One bounded run of the fixer on one incident."""
+
+    prompt: str
+    cwd: Path
+    add_dirs: Sequence[Path]
+    settings: Path
+    """The settings file holding the permission rules (`claude --settings`)."""
+    max_turns: int
+    max_budget_usd: float
+    transcript: Path
+    """Where the stream-json transcript goes, every line of it."""
+    attempt: int = 1
+    env: Mapping[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class FixerRun:
+    """What the executable did: its command line (never the prompt), how it
+    ended, and where its transcript is."""
+
+    argv: tuple[str, ...]
+    exit_code: int
+    transcript: Path
+    stderr: str
+    duration_s: float
+
+
+class FixerAgent(Protocol):
+    """A headless coding agent: a brief in, changes in the worktree and a
+    stream-json transcript out. It never commits; the runner does."""
+
+    name: str
+
+    def describe(self) -> dict[str, object]:
+        """Adapter, executable, model and version, for the fix record."""
+        ...
+
+    def run(self, call: FixerCall) -> FixerRun: ...
+
+
+@dataclass(frozen=True)
+class GateResult:
+    kind: str
+    passed: bool
+    summary: str
+    detail: dict[str, object] = field(default_factory=dict)
+    duration_s: float = 0.0
+
+
+class FixGates(Protocol):
+    """Whether the agent in a worktree is green. Run by the runner after the
+    fixer's changes are committed, never by the fixer's word."""
+
+    name: str
+
+    def check(self, agent_worktree: Path, scenarios: Sequence[Path]) -> GateResult: ...
+
+
 __all__ = [
     "Actor",
+    "FixGates",
+    "FixerAgent",
+    "FixerCall",
+    "FixerRun",
+    "GateResult",
     "Happening",
     "Population",
     "Rows",

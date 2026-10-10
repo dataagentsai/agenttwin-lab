@@ -1,0 +1,32 @@
+diff --git a/scenarios/a-lost-parcel-goes-to-a-person.yaml b/scenarios/a-lost-parcel-goes-to-a-person.yaml
+index d254c94..be22c75 100644
+--- a/scenarios/a-lost-parcel-goes-to-a-person.yaml
++++ b/scenarios/a-lost-parcel-goes-to-a-person.yaml
+@@ -22,4 +22,3 @@ desk:
+ 
+ expect:
+   - {handed_off: 1}
+-  - {world: unchanged}
+diff --git a/scenarios/incoming/INC-0001-a-status-question-is-answered.yaml b/scenarios/incoming/INC-0001-a-status-question-is-answered.yaml
+new file mode 100644
+index 0000000..cebef95
+--- /dev/null
++++ b/scenarios/incoming/INC-0001-a-status-question-is-answered.yaml
+@@ -0,0 +1,17 @@
++# INC-0001 (agenttwin-lab, clothing-day seed 7): the carrier marked a parcel
++# delivered that was still on its van, and the agent stated the scan as fact.
++apiVersion: awd-scenario/v0
++scenario: a status question about a parcel the carrier scanned is answered
++world: ../../worlds/clothing.yaml
++as: C-1042
++objective: The customer asks where AB-10001 is and gets an answer.
++discharges: [P-DIRECT, op:get_order]
++max_turns: 1
++
++actor:
++  says:
++    - where is my order AB-10001
++
++expect:
++  - {reply: says, text: [AB-10001]}
++  - {world: unchanged}

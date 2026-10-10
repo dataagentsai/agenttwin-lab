@@ -1,0 +1,86 @@
+# The fixer's configuration (grant slice 3.4). `compose.py` reads it and binds
+# the adapters it names; nothing else branches on which is bound.
+apiVersion: agenttwin-lab-fixer/v0
+
+# The main checkouts. The fixer never sees them: it works on git worktrees of
+# them, on a branch per incident, under `workdir`. Relative to this file.
+repos:
+  reference-agent: ../../reference-agent
+  clean-ai-engineering: ../../clean-ai-engineering
+primary: reference-agent          # the fixer's working directory
+
+# Linked (read-only, by the deny rules) beside the worktrees, so the relative
+# paths the repos use to find each other resolve: reference-agent's
+# `../agenttwin`, the gates' `../ai-harness-catalog`.
+siblings:
+  agenttwin: ../../agenttwin
+  ai-harness-catalog: ../../ai-harness-catalog
+  ai-assurance-catalog: ../../ai-assurance-catalog
+
+workdir: ../work                  # gitignored
+
+# The executable is a port. `stub` replays a canned transcript and diff;
+# `real-claude` runs Claude Code headless and needs ANTHROPIC_API_KEY in the
+# environment (never in a file).
+agent:
+  adapter: stub
+  stub: {fixture: honest}
+  real-claude: {executable: claude, model: opus}
+
+limits:
+  max_turns: 40                   # per attempt (claude --max-turns)
+  max_budget_usd: 5.0             # per attempt (claude --max-budget-usd)
+  retries: 1                      # then the incident goes to a person
+
+# What decides the fix is green. `incident-scenarios` runs the new scenario
+# before and after the fix (seconds); `four-gates` adds clean-ai-engineering's
+# tools/gates.py from the MAIN checkout, so the judge and the yardstick are
+# never the fixer's copies (minutes).
+gates:
+  adapter: incident-scenarios
+  four-gates: {script: ../../clean-ai-engineering/tools/gates.py}
+
+# How the lab drives the fixed agent in a worktree: its gate binding, with the
+# worktree's packages first on the lab interpreter's path.
+drive:
+  binding: evals.gate_binding:open_subject
+  pythonpath: [src, packages/agent-harness/src]
+
+# The day the fix is re-run against, with the incident's seed.
+day:
+  world: ../worlds/clothing-day.yaml
+  plan: ../days/one-day.yaml
+
+# Where the fixer writes the incident's scenario: in the agent's worktree,
+# beside the yardstick and outside it (the gates read `scenarios/*.yaml`, not
+# subdirectories). It joins the yardstick after a person reviews it (T-083).
+incoming: reference-agent/scenarios/incoming
+
+# Paths under the work directory the fixer may not change (T-083). Each is
+# denied to the file tools in the settings file Claude Code is given; 3.5 adds
+# the git hook and branch protection. Globs: `*` stays in one directory, `**`
+# crosses them.
+protected:
+  - {path: "reference-agent/scenarios/*.yaml", why: "the yardstick scenarios and their expectations"}
+  - {path: "reference-agent/worlds/**", why: "the worlds the yardstick runs in"}
+  - {path: "reference-agent/gates.yaml", why: "how the gates reach the agent"}
+  - {path: "reference-agent/harness-profile.yaml", why: "the accepted gaps the harness gate reads"}
+  - {path: "reference-agent/evals/gate_binding.py", why: "the binding the gates drive the agent through"}
+  - {path: "clean-ai-engineering/gates/**", why: "the yardstick and the feature inventory"}
+  - {path: "clean-ai-engineering/tools/gates.py", why: "the gates themselves"}
+  - {path: "agenttwin/**", why: "the world format and its oracles (AWD), linked from the main checkout"}
+  - {path: "ai-assurance-catalog/**", why: "the assurance catalog (AAC), linked from the main checkout"}
+  - {path: "ai-harness-catalog/**", why: "the harness catalog (AHC), linked from the main checkout"}
+
+# Paths the fixer may change, where a person approves before merge: a spec
+# change is the owner's decision (T-083).
+approval_required:
+  - {path: "clean-ai-engineering/drafts/**", why: "the agent's spec (AOAS)"}
+  - {path: "reference-agent/scenarios/incoming/**", why: "a new scenario joins the yardstick after review"}
+
+# Shell commands the fixer may run, and ones it may not. Everything else is
+# refused (permission mode dontAsk).
+shell:
+  allow: ["uv run:*", "git status:*", "git diff:*", "git log:*", "ls:*"]
+  deny: ["git commit:*", "git push:*", "git checkout:*", "git reset:*", "git worktree:*",
+         "git branch:*", "gh:*", "rm:*", "curl:*"]

@@ -2,12 +2,14 @@
 
 **An agent runs simulated days in an AgentTwin world, and the world watches it.**
 
-**Status: 0.1.0, 11 October 2026, a working draft.** One simulated day runs
+**Status: 0.2.0, 11 October 2026, a working draft.** One simulated day runs
 unattended against the reference support agent, in process, on a laptop: a
 generated population, customers arriving on a curve, an incident on the
 world's calendar, and a monitor that raises it with its evidence. A clean
-world's day raises nothing. The fixer, the protected paths and the deployer
-come next.
+world's day raises nothing. The fixer harness (3.4) turns an incident into a
+brief, runs a headless coding agent on it in git worktrees, and records
+everything it tried; until the owner's API key exists it runs against a stub.
+Hardened protected paths (3.5) and the deployer come next.
 
 ```bash
 uv sync --extra dev
@@ -141,6 +143,42 @@ that names them, and nothing else branches on which is bound.
 
 AgentTwin's own part is the calendar and the monitor (`agenttwin` 0.8.0); the
 lab only wires them.
+
+## The fixer (grant slice 3.4)
+
+```bash
+uv run agenttwin-lab brief INC-0001 --run runs/clothing-day-seed7-k1      # the brief, markdown
+uv run agenttwin-lab fix INC-0001 --run runs/clothing-day-seed7-k1        # stub, honest
+uv run agenttwin-lab fix INC-0001 --run ... --fixture gaming              # stub, gaming
+uv run agenttwin-lab fix INC-0001 --run ... --adapter real-claude         # needs ANTHROPIC_API_KEY
+```
+
+| Step | What happens | Where |
+|---|---|---|
+| The brief | the incident record, the row as recorded and as true, the calendar event, trace ids; the AOAS statements quoted from the spec and the gaps the lab found; the rules (failing scenario first, route, change, gates, a PR that names the statement); protected paths; turn and spend limits | `brief.py`, template `fixer/brief.md`, context `fixer/incidents.yaml` |
+| Worktrees | one per repo on `fix/INC-xxxx-<run>`, plus a detached copy of each at the base; the main checkouts' working trees are never touched | `fixer.py` (`Worktrees`) |
+| The fixer | Claude Code headless (`claude -p --output-format stream-json --verbose --max-turns N --max-budget-usd X --settings <deny rules> --permission-mode dontAsk --bare ...`), the brief on stdin, the key from the environment only | `claude_code.py`, port `FixerAgent` |
+| Capture | the stream-json transcript, every file edit and shell command it attempted (refused or not, protected or not), the diff per repo, the commit, its own PR text, every scenario's `expect` and `calendar` before and after | `fixer.py` |
+| Judge | the new scenario fails on the base agent and passes on the fixed one; the gates pass; the day re-run (same world, same seed) does not raise the incident again | `fixgates.py`, port `FixGates` |
+| Limits | `--max-turns` per attempt, one retry, then a person | `fixer/fixer.yaml` |
+| PR | written to `pr-body.md`; pushed and opened with `gh` only with `--open-pr`, and only for a green fix with no protected path changed | `fixer.py` |
+| The record | `agenttwin-fix/v0` in `runs/<day>/fixes/<incident>-<run>/fix.json`, and `time_to_fix_s` in the day report | `fixer.py` |
+
+Adapters are chosen in `fixer/fixer.yaml`. **`stub`** replays a canned
+transcript and applies a canned diff (`fixer/stubs/`), deciding refusals from
+the settings file it is given as Claude Code would. Two fixtures: **honest**
+writes the failing scenario, adds an attribution statement to the AOAS
+(`P-ATTRIBUTION`) and changes the agent's status reply (its diff was made and
+checked for real: the four gates pass and the day re-runs clean); **gaming**
+takes the planted lie out of its own scenario, edits a yardstick scenario's
+expectation through the shell after the file tool was refused, and tries to
+loosen the gates. **`real-claude`** waits for the key.
+
+Gates: **`incident-scenarios`** (the default, seconds) or **`four-gates`**
+(clean-ai-engineering's `tools/gates.py` **from the main checkout**, so the
+judge and the yardstick are never the fixer's copies; minutes).
+
+Time to fix is wall-clock seconds of the fix run, not world time.
 
 ## Time
 

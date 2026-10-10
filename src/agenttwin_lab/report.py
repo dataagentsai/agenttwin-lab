@@ -11,8 +11,9 @@ Over k days each verdict gives **pass^k** (τ-bench's measure): the chance that
 k runs drawn from these all pass, `C(c, k) / C(n, k)` for c passes in n runs.
 With n = k it is 1 when every run passed and 0 otherwise.
 
-Time to fix and time to deploy are placeholders until the fixer (3.4) and the
-deployer (3.6) exist; the report carries the fields so nothing reshapes later.
+Time to fix is filled by the fixer (`agenttwin-lab fix`, 3.4): wall-clock
+seconds from the fix run's start to a verified fix, `None` until then or if it
+was not fixed. Time to deploy waits for the deployer (3.6).
 """
 
 from __future__ import annotations
@@ -113,6 +114,16 @@ def _seconds(value: int | None) -> str:
     return f"{hours}h {rest // 60:02d}m"
 
 
+def _fix(incident: dict[str, Any]) -> str:
+    """Time to fix is wall-clock seconds of the fix run (3.4), not world time."""
+    fix = incident.get("fix")
+    if incident.get("time_to_fix_s") is not None:
+        return f"{incident['time_to_fix_s']:.0f} s (wall)"
+    if fix:
+        return f"not fixed: {fix['outcome']}"
+    return "pending (3.4)"
+
+
 def markdown(r: dict[str, Any]) -> str:
     lines = [
         f"# Day report: {', '.join(r['worlds'])}",
@@ -150,7 +161,7 @@ def markdown(r: dict[str, Any]) -> str:
             lines.append(
                 f"| {d['id']} | {i['id']} | {i['rule']} | `{i['root']}` | {i['count']} "
                 f"| {i['detected_at']} | {_seconds(i['time_to_detect_s'])} "
-                f"| pending (3.4) | pending (3.6) |"
+                f"| {_fix(i)} | pending (3.6) |"
             )
     if not any(d["incidents"] for d in r["days"]):
         lines.append("| — | none | | | | | | | |")

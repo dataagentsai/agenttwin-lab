@@ -1,0 +1,46 @@
+# What the lab knows about an incident's root cause, for the fixer's brief
+# (grant slice 3.4). Keyed by the incident record's `root`. Data the lab found
+# by reading the agent's spec against the incident (README, "What the clothing
+# AOAS says, and what it does not"); the brief quotes the statements from the
+# AOAS itself, so nothing here copies the spec's words.
+#
+# `statements` are paths into the AOAS the world cites: dotted keys, and
+# `[id=...]` to pick a list item by its id.
+
+calendar:carrier-marks-undelivered-parcels-delivered:
+  summary: >-
+    The carrier marked parcels delivered that were still on its vans. The order
+    system believed it, and the agent's deterministic status answer (P-DIRECT)
+    told each customer the scan as fact.
+  statements:
+    - policies.P-DIRECT
+    - entities.order.fields.status
+    - state_machines.order_status.concurrent_writers
+    - intents.lost_in_transit
+    - policies.escalation.on_request[id=lost-in-transit]
+    - operations.request_refund.on_refusal
+  gaps:
+    - id: no-attribution
+      says: >-
+        No statement says how to report a status an outside party wrote.
+        Nothing distinguishes the carrier's claim ("the carrier scanned it as
+        delivered") from the store's fact, so P-DIRECT states the carrier's scan
+        as fact. This is the incident. The missing statement is an attribution
+        rule: a status written by an external party is reported as that
+        party's, never as what happened.
+    - id: no-dispute-field
+      says: >-
+        The order has no field for "the customer says it did not arrive" (nor
+        for the carrier's scan time), so the order system cannot hold the
+        dispute and the next reader sees only `delivered`.
+    - id: no-dispute-obligation
+      says: >-
+        No `owed_when` covers a disputed delivery, and the `escalation` entity
+        carries no `order_id`, so nothing ties the handoff to the order and no
+        obligation exists that a monitor could find undone. Meanwhile
+        `days_since_delivery` advances from the carrier's scan, so the return
+        window closes on a parcel that never arrived.
+    - id: no-due-time
+      says: >-
+        `owed_when` says what is owed, never by when. The lab's monitor is
+        given four hours (`days/one-day.yaml`); no spec states it.

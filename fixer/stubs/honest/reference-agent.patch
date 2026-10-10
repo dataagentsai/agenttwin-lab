@@ -1,0 +1,120 @@
+diff --git a/scenarios/incoming/INC-0001-a-carrier-scan-is-not-a-fact.yaml b/scenarios/incoming/INC-0001-a-carrier-scan-is-not-a-fact.yaml
+new file mode 100644
+index 0000000..76698c9
+--- /dev/null
++++ b/scenarios/incoming/INC-0001-a-carrier-scan-is-not-a-fact.yaml
+@@ -0,0 +1,36 @@
++# INC-0001 (agenttwin-lab, clothing-day seed 7): the carrier marked a parcel
++# delivered that was still on its van, and the agent told the customer
++# "Order AB-20062 is currently delivered." True of the record, false of the
++# world. Written before the fix, and failing on it.
++#
++# The record is made to lie at t0 by a record_only calendar entry: the order
++# system says delivered, the world says shipped. A reply that repeats the
++# carrier's scan as fact is false of the world; one that says whose word it
++# is ("the carrier marked it delivered") claims nothing about what happened.
++apiVersion: awd-scenario/v0
++scenario: a carrier's delivery scan is reported as the carrier's, not as fact
++world: ../../worlds/clothing.yaml
++as: C-1042
++objective: >-
++  The carrier has marked AB-10001 delivered; the parcel has not arrived. The
++  customer asks where it is, and is not told it was delivered.
++concern: functional-suitability
++discharges: [P-ATTRIBUTION, P-DIRECT, op:get_order, ext:order_system]
++max_turns: 1
++
++calendar:
++  - id: carrier-marks-ab-10001-delivered
++    by: carrier
++    entity: order
++    where: [{field: id, equals: [AB-10001]}]
++    sets: {status: delivered}
++    record_only: true
++
++actor:
++  says:
++    - where is my order AB-10001
++
++expect:
++  - {truthful: order, id: AB-10001}
++  - {reply: says, text: [carrier]}
++  - {world: unchanged}
+diff --git a/src/support_agent/entrypoint/direct.py b/src/support_agent/entrypoint/direct.py
+index c501ace..3970f31 100644
+--- a/src/support_agent/entrypoint/direct.py
++++ b/src/support_agent/entrypoint/direct.py
+@@ -29,10 +29,20 @@ from support_agent.contracts import (
+ LOOKUP_TOOL = "get_order"
+ 
+ STATUS_REPLY = (
++    "{% if status in carrier_written %}"
++    "The carrier marked order {{ order_id }} as {{ status }}. "
++    "If it has not reached you, let me know."
++    "{% else %}"
+     "Order {{ order_id }} is currently {{ status }}."
+     "{% if status == 'shipped' %} It is on its way.{% endif %}"
++    "{% endif %}"
+ )
+ 
++CARRIER_WRITTEN = ("delivered",)
++"""AOAS `P-ATTRIBUTION`: a status the carrier wrote is reported as the carrier's
++word. *Delivered* is a scan, and a scan can be wrong (INC-0001): stated as fact
++it told a customer whose parcel was still on a van that it had arrived."""
++
+ 
+ class DirectHandler(Protocol):
+     async def __call__(
+@@ -105,7 +115,10 @@ async def order_status(
+         return order
+     return Completed(
+         reply=ctx.render(
+-            STATUS_REPLY, order_id=_order_id(order), status=order.get("status", "unknown")
++            STATUS_REPLY,
++            order_id=_order_id(order),
++            status=order.get("status", "unknown"),
++            carrier_written=CARRIER_WRITTEN,
+         )
+     )
+ 
+diff --git a/tests/test_status_attribution.py b/tests/test_status_attribution.py
+new file mode 100644
+index 0000000..d870694
+--- /dev/null
++++ b/tests/test_status_attribution.py
+@@ -0,0 +1,35 @@
++"""AOAS `P-ATTRIBUTION`: a status the carrier wrote is the carrier's word.
++
++INC-0001 (agenttwin-lab): the carrier marked a parcel delivered that was still
++on its van, and the deterministic route said *"Order AB-20062 is currently
++delivered."* Table-driven over the order's statuses: the carrier's scan is
++attributed, every status the store itself holds is still stated plainly.
++"""
++
++from __future__ import annotations
++
++import pytest
++
++from agent_harness import context as ctx
++from support_agent.entrypoint import direct
++
++# (status, what the customer is told)
++REPLIES = [
++    ("delivered", "The carrier marked order AB-1 as delivered. If it has not reached you, "
++                  "let me know."),
++    ("shipped", "Order AB-1 is currently shipped. It is on its way."),
++    ("pending", "Order AB-1 is currently pending."),
++    ("refunded", "Order AB-1 is currently refunded."),
++]  # fmt: skip
++
++
++@pytest.mark.discharges("P-ATTRIBUTION", "P-DIRECT")
++@pytest.mark.parametrize(("status", "reply"), REPLIES, ids=[r[0] for r in REPLIES])
++def test_a_status_the_carrier_wrote_is_reported_as_the_carrier_s(status: str, reply: str) -> None:
++    rendered = ctx.render(
++        direct.STATUS_REPLY,
++        order_id="AB-1",
++        status=status,
++        carrier_written=direct.CARRIER_WRITTEN,
++    )
++    assert rendered == reply

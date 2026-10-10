@@ -1,0 +1,21 @@
+diff --git a/drafts/examples/support-agent.aoas.yaml b/drafts/examples/support-agent.aoas.yaml
+index 9f542ae..febd767 100644
+--- a/drafts/examples/support-agent.aoas.yaml
++++ b/drafts/examples/support-agent.aoas.yaml
+@@ -585,6 +585,16 @@ policies:
+     addressed_to: harness
+     concern: safety
+     facet: operational constraint
++  # INC-0001 (agenttwin-lab, 11 Oct): the carrier marked three parcels
++  # delivered that were still on its vans, and P-DIRECT told each customer
++  # "Order AB-20062 is currently delivered" — true of the record, false of the
++  # world. `order.status` has outside writers (`concurrent_writers`), and
++  # nothing said how a value one of them wrote is reported.
++  P-ATTRIBUTION:
++    rule: a status an outside party wrote is reported as that party's word, never as what happened — a delivery the carrier scanned is "the carrier marked it delivered", with the way to say it did not arrive
++    via: [get_order]
++    concern: functional-suitability
++    facet: functional correctness
+   # T-001. A chat that opens empty makes the customer supply an order number they
+   # rarely have, and the first turns of every real conversation go on finding
+   # the order. Opening is the cheapest turn there is: a read of their own rows
