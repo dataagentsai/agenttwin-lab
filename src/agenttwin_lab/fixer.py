@@ -43,6 +43,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib.metadata import version
@@ -100,14 +101,22 @@ class Worktrees:
 
     @classmethod
     def create(
-        cls, config: FixerConfig, root: Path, branch: str, *, read_only: bool = True
+        cls,
+        config: FixerConfig,
+        root: Path,
+        branch: str,
+        *,
+        read_only: bool = True,
+        base: Mapping[str, str] | None = None,
     ) -> Worktrees:
+        """`base`: the commit per repo to branch from (production's release
+        pointer, 3.6); each repo's HEAD where it names none."""
         ws = cls(root=root, branch=branch, repos=dict(config.repos))
         root.mkdir(parents=True, exist_ok=False)
         (root / "base").mkdir()
         try:
             for name, main in config.repos.items():
-                ws.base[name] = git(main, "rev-parse", "HEAD").strip()
+                ws.base[name] = (base or {}).get(name) or git(main, "rev-parse", "HEAD").strip()
                 ws.trees[name] = root / name
                 git(main, "worktree", "add", "-q", "-b", branch, str(ws.trees[name]), ws.base[name])
                 ws.base_trees[name] = root / "base" / name
@@ -375,6 +384,7 @@ class Fixer:
         open_pr: bool = False,
         keep_worktrees: bool = False,
         run_id: str | None = None,
+        base: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         started_wall = datetime.now(UTC)
         started = time.monotonic()
@@ -388,6 +398,7 @@ class Fixer:
             self.config.workdir / f"{incident_id}-{run}",
             branch,
             read_only=self.config.layer("read_only"),
+            base=base,
         )
         try:
             record = self._run(found, ws, out, run, branch, open_pr, started)

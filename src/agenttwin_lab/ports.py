@@ -10,6 +10,7 @@ knows only the protocols, and `compose.py` is the one place that names a tool.
 | `agenttwin.Binding` | the agent under test, in process | the reference agent's gate binding |
 | `FixerAgent` | the coding agent that fixes an incident | `real-claude` or `stub` |
 | `FixGates` | whether a fix is green | `incident-scenarios` or `four-gates` |
+| `Approval` | a person's yes to a deploy | `local`, `github`, `auto-for-tests` |
 """
 
 from __future__ import annotations
@@ -151,8 +152,58 @@ class FixGates(Protocol):
     def check(self, agent_worktree: Path, scenarios: Sequence[Path]) -> GateResult: ...
 
 
+@dataclass(frozen=True)
+class DeployCase:
+    """What a person is shown before a deploy: the fix record's verdict and
+    everything 3.5 found, in plain values."""
+
+    incident: str
+    fix_record: str
+    release: str
+    """The id the release will get if approved."""
+    outcome: str
+    verdict: str
+    gates: str
+    refusals: Mapping[str, Mapping[str, int]]
+    """layer -> {stopped, passed}"""
+    weakening: Mapping[str, int]
+    """category -> edits labelled weakening on the branch"""
+    weakening_tried: int
+    honesty_flags: int
+    honesty: Sequence[str]
+    repos: Mapping[str, Mapping[str, str]]
+    """repo -> {base, head}: what production moves from and to"""
+    approval_required: Sequence[str] = ()
+    """Paths a person must approve before merge (the AOAS, a new scenario)."""
+
+
+@dataclass(frozen=True)
+class Decision:
+    """A yes or a no, and who said it, how and when."""
+
+    approved: bool
+    approver: str | None
+    adapter: str
+    at: str
+    how: str
+    test_only: bool = False
+    detail: Mapping[str, object] = field(default_factory=dict)
+
+
+class Approval(Protocol):
+    """A person's approval of one deploy. Asked only for a deploy the lab
+    would allow: a refused fix never reaches a person as a question."""
+
+    name: str
+
+    def ask(self, case: DeployCase) -> Decision: ...
+
+
 __all__ = [
     "Actor",
+    "Approval",
+    "Decision",
+    "DeployCase",
     "FixGates",
     "FixerAgent",
     "FixerCall",

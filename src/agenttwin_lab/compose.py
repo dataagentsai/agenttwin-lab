@@ -11,13 +11,14 @@ from typing import TYPE_CHECKING
 
 from agenttwin import load_binding
 
+from agenttwin_lab.approval import AutoForTests, GitHubEnvironment, LocalApproval
 from agenttwin_lab.claude_code import RealClaude, StubClaude
 from agenttwin_lab.day import Lab
 from agenttwin_lab.fixconfig import FixerConfig
 from agenttwin_lab.fixgates import FourGates, IncidentScenarios
 from agenttwin_lab.plan import DayPlan
 from agenttwin_lab.population import FakerPopulation
-from agenttwin_lab.ports import FixerAgent, FixGates
+from agenttwin_lab.ports import Approval, FixerAgent, FixGates
 from agenttwin_lab.schedule import SimPySchedule
 from agenttwin_lab.tracing import OtelTurns
 from agenttwin_lab.wallclock import TimeMachineWall
@@ -87,4 +88,28 @@ def default_fixer(
     return Fixer(config=config, agent=agent, gates=judge)
 
 
-__all__ = ["GATE_BINDING", "MINTED", "REFERENCE", "STUBS", "default_fixer", "default_lab"]
+APPROVALS = ("local", "github", "auto-for-tests")
+
+
+def approval(name: str, *, i_am_a_test: bool = False) -> Approval:
+    """The approval adapter by name. `auto-for-tests` raises `NotATest`
+    outside pytest unless `i_am_a_test`."""
+    if name == "local":
+        return LocalApproval()
+    if name == "github":
+        return GitHubEnvironment()
+    if name == "auto-for-tests":
+        return AutoForTests.allowed(i_am_a_test)
+    raise ValueError(f"no approval adapter {name!r}: {', '.join(APPROVALS)}")
+
+
+__all__ = [
+    "APPROVALS",
+    "GATE_BINDING",
+    "MINTED",
+    "REFERENCE",
+    "STUBS",
+    "approval",
+    "default_fixer",
+    "default_lab",
+]

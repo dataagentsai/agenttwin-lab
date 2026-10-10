@@ -3,6 +3,9 @@
     uv run agenttwin-lab day --world worlds/clothing-day.yaml --repeat 3
     uv run agenttwin-lab brief INC-0001 --run runs/clothing-day-seed7-k2
     uv run agenttwin-lab fix INC-0001 --run runs/clothing-day-seed7-k2   # the stub, offline
+    uv run agenttwin-lab deploy runs/.../fixes/INC-0001-<run>/fix.json  # a person approves
+    uv run agenttwin-lab rollback
+    uv run agenttwin-lab loop --days 2 --fixer stub:honest --approve local
 """
 
 from __future__ import annotations
@@ -16,21 +19,27 @@ from typing import Any
 from agenttwin import load
 
 from agenttwin_lab.brief import find, load_context, render
-from agenttwin_lab.compose import GATE_BINDING, REFERENCE, default_lab
+from agenttwin_lab.compose import APPROVALS, GATE_BINDING, REFERENCE, default_lab
 from agenttwin_lab.day import run_day
 from agenttwin_lab.fixconfig import CONFIG, load_config
 from agenttwin_lab.plan import load_plan
 from agenttwin_lab.report import markdown, report
 
 ROOT = Path(__file__).resolve().parents[2]
+RELEASES = ROOT / "releases"
 
 
 async def days(
-    world_path: Path, plan_path: Path, seeds: list[int], binding: str, agent_root: Path
+    world_path: Path,
+    plan_path: Path,
+    seeds: list[int],
+    binding: str,
+    agent_root: Path,
+    spec: Path | None = None,
 ) -> list[dict[str, Any]]:
     plan = load_plan(plan_path)
     lab = default_lab(plan, binding=binding, agent_root=agent_root)
-    world = load(world_path)
+    world = load(world_path, spec=spec)
     return [await run_day(lab, world, plan, seed=seed) for seed in seeds]
 
 
@@ -45,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     day.add_argument("--out", type=Path, default=None)
     day.add_argument("--binding", default=GATE_BINDING)
     day.add_argument("--agent-root", type=Path, default=REFERENCE)
+    day.add_argument("--spec", type=Path, default=None, help="the AOAS, instead of the world's")
 
     brief = sub.add_parser("brief", help="turn an incident record into the fixer's brief")
     brief.add_argument("incident", help="the incident id, e.g. INC-0001")
@@ -65,8 +75,43 @@ def main(argv: list[str] | None = None) -> int:
     fix.add_argument("--max-turns", type=int, default=None)
     fix.add_argument("--open-pr", action="store_true", help="push the branch and open PRs (gh)")
     fix.add_argument("--keep-worktrees", action="store_true")
+
+    dep = sub.add_parser("deploy", help="a person deploys a fixed branch into the lab's production")
+    dep.add_argument("fix_record", type=Path, help="the fix record, fix.json")
+    dep.add_argument("--approve", choices=APPROVALS, default="local")
+    dep.add_argument("--i-am-a-test", action="store_true", help=argparse.SUPPRESS)
+    dep.add_argument("--releases", type=Path, default=RELEASES)
+    dep.add_argument("--config", type=Path, default=CONFIG)
+
+    back = sub.add_parser("rollback", help="production goes back to the previous release")
+    back.add_argument("--releases", type=Path, default=RELEASES)
+    back.add_argument("--by", default=None, help="who rolls back (default: you)")
+    back.add_argument("--why", default="")
+
+    loop = sub.add_parser("loop", help="day, fix, approve, deploy, next day: one run record")
+    loop.add_argument("--world", type=Path, default=None, help="default: the fixer config's")
+    loop.add_argument("--plan", type=Path, default=None, help="default: the fixer config's")
+    loop.add_argument("--days", type=int, default=2)
+    loop.add_argument("--seed", type=int, default=7)
+    loop.add_argument("--repeat", type=int, default=1, metavar="K", help="k loops: pass^k")
+    loop.add_argument("--fixer", default="stub:honest", help="stub:<fixture> or real-claude")
+    loop.add_argument("--approve", choices=APPROVALS, default="local")
+    loop.add_argument("--i-am-a-test", action="store_true",
+                      help="allow --approve auto-for-tests outside pytest; the record says so")
+    loop.add_argument("--canary", type=float, default=None, metavar="F",
+                      help="the day after a deploy splits visits: F to the new release")
+    loop.add_argument("--config", type=Path, default=CONFIG)
+    loop.add_argument("--sandbox", type=Path, default=None,
+                      help="clone the repos here and run in the clones")
+    loop.add_argument("--releases", type=Path, default=RELEASES,
+                      help="production at the start: this pointer, if it names the same repos")
+    loop.add_argument("--out", type=Path, default=None)
     args = parser.parse_args(argv)
 
+    if args.command in ("deploy", "rollback", "loop"):
+        from agenttwin_lab import cli_release
+
+        return int(getattr(cli_release, args.command)(args, parser))
     if args.command == "brief":
         return _brief(args)
     if args.command == "fix":
@@ -77,7 +122,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.repeat < 1:
         parser.error("--repeat must be at least 1")
     seeds = [args.seed + i for i in range(args.repeat)]
-    ledgers = asyncio.run(days(args.world, args.plan, seeds, args.binding, args.agent_root))
+    ledgers = asyncio.run(
+        days(args.world, args.plan, seeds, args.binding, args.agent_root, args.spec)
+    )
     r = report(ledgers)
     out = args.out or ROOT / "runs" / f"{ledgers[0]['world']}-seed{args.seed}-k{args.repeat}"
     out.mkdir(parents=True, exist_ok=True)

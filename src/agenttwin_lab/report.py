@@ -13,7 +13,9 @@ With n = k it is 1 when every run passed and 0 otherwise.
 
 Time to fix is filled by the fixer (`agenttwin-lab fix`, 3.4): wall-clock
 seconds from the fix run's start to a verified fix, `None` until then or if it
-was not fixed. Time to deploy waits for the deployer (3.6).
+was not fixed. Time to deploy is filled by the loop (`agenttwin-lab loop`,
+3.7): wall-clock seconds from the fix run's end to the release record, a
+person's approval included; `None` if nothing was deployed.
 """
 
 from __future__ import annotations
@@ -124,6 +126,15 @@ def _fix(incident: dict[str, Any]) -> str:
     return "pending (3.4)"
 
 
+def _deploy(incident: dict[str, Any]) -> str:
+    deployed = incident.get("deploy")
+    if incident.get("time_to_deploy_s") is not None and deployed:
+        return f"{incident['time_to_deploy_s']:.1f} s (wall), {deployed['release']}"
+    if deployed:
+        return f"not deployed: {deployed['status']}"
+    return "not deployed"
+
+
 def markdown(r: dict[str, Any]) -> str:
     lines = [
         f"# Day report: {', '.join(r['worlds'])}",
@@ -161,7 +172,7 @@ def markdown(r: dict[str, Any]) -> str:
             lines.append(
                 f"| {d['id']} | {i['id']} | {i['rule']} | `{i['root']}` | {i['count']} "
                 f"| {i['detected_at']} | {_seconds(i['time_to_detect_s'])} "
-                f"| {_fix(i)} | pending (3.6) |"
+                f"| {_fix(i)} | {_deploy(i)} |"
             )
     if not any(d["incidents"] for d in r["days"]):
         lines.append("| — | none | | | | | | | |")

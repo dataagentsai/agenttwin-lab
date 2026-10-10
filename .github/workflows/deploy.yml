@@ -1,0 +1,84 @@
+# A person deploys (grant slice 3.6), the GitHub adapter of the `Approval` port.
+#
+# Run by hand (workflow_dispatch) with the path of a fix record committed to
+# this repository. The job runs in the `production` ENVIRONMENT: if the owner
+# has given that environment required reviewers, GitHub holds the job until one
+# of them approves it, and `agenttwin-lab deploy --approve github` reads who
+# approved from the run (GET /repos/{repo}/actions/runs/{id}/approvals). With no
+# approval by a person, the adapter says no and nothing is deployed.
+#
+# This file changes no repository setting. The owner creates the environment
+# and adds himself as a reviewer (README, "Deploying from GitHub").
+#
+# What it moves is the lab's release pointer, `releases/production.json`, never
+# a branch of reference-agent or clean-ai-engineering. The fix's commits must
+# be on GitHub (the fix branch pushed, `agenttwin-lab fix --open-pr`).
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      fix_record:
+        description: "The fix record to deploy (agenttwin-fix/v0), a path in this repository"
+        required: true
+        type: string
+
+permissions:
+  contents: write   # to commit the release pointer and record
+  actions: read     # to read the run's approvals
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      AGENTTWIN_DEPLOY_ENVIRONMENT: production
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: agenttwin-lab
+      # The lab names its siblings by relative path (`../reference-agent`), so
+      # they are checked out beside it, with every branch (the fix's commits).
+      - uses: actions/checkout@v4
+        with:
+          repository: dataagentsai/reference-agent
+          path: reference-agent
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: dataagentsai/clean-ai-engineering
+          path: clean-ai-engineering
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: dataagentsai/agenttwin
+          path: agenttwin
+      - uses: astral-sh/setup-uv@v6
+      - name: Fetch the fix branches
+        run: |
+          for repo in reference-agent clean-ai-engineering; do
+            git -C "$repo" fetch -q origin '+refs/heads/fix/*:refs/heads/fix/*' || true
+          done
+      - name: Deploy, if the lab allows it and a reviewer approved
+        working-directory: agenttwin-lab
+        env:
+          FIX_RECORD: ${{ inputs.fix_record }}
+        run: |
+          uv sync --frozen
+          uv run agenttwin-lab deploy "$FIX_RECORD" --approve github
+      - name: Commit the release pointer and record
+        working-directory: agenttwin-lab
+        env:
+          FIX_RECORD: ${{ inputs.fix_record }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          git config user.name "agenttwin-lab deploy"
+          git config user.email "deploy@agenttwin-lab.invalid"
+          git add releases/
+          git commit -m "Deploy $FIX_RECORD (approved in run $RUN_ID)"
+          git push
