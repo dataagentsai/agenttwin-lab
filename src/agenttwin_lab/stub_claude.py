@@ -10,12 +10,27 @@ from stdin, then:
 1. replays the fixture's canned stream-json transcript for this attempt
    (`AGENTTWIN_STUB_FIXTURE`, `AGENTTWIN_STUB_ATTEMPT`), filling in the
    worktree paths;
-2. decides every file edit and shell command in it **against the settings file
-   it was given**, as Claude Code's permission rules would: a denied one gets
-   Claude Code's refusal text as its tool result and is listed in the result
-   event's `permission_denials`;
-3. applies the fixture's patches to the worktrees (`git apply`), which are the
-   changes the run made through the tools that were allowed.
+2. runs the settings file's **hooks** as Claude Code would (3.5): for each
+   tool call, every `PreToolUse` hook whose matcher matches gets the call as
+   JSON on stdin (`session_id`, `transcript_path`, `cwd`, `permission_mode`,
+   `hook_event_name`, `tool_name`, `tool_input`, `tool_use_id`, the fields the
+   2.1.241 bundle builds) and may deny it, by `permissionDecision: deny` or by
+   exit code 2; then `PostToolUse` (or `PostToolUseFailure`) gets the result.
+   With `--bare` no hook runs, as with the real CLI;
+3. decides every call a hook did not deny **against the settings file's
+   permission rules**: a denied one gets Claude Code's refusal text as its tool
+   result and is listed in the result event's `permission_denials`;
+4. **executes for real** the shell commands the fixture lists under `execute`
+   (`uv run python` becomes this interpreter), so a write through the shell
+   meets the read-only layer the way the real one would, and its output is the
+   tool result;
+5. applies the fixture's patches to the worktrees (`git apply`), which are the
+   changes the run made through the file tools that were allowed.
+
+What it cannot emulate: the hook-denial wording of the real CLI (its own words
+here), the order Claude Code gives hooks and rules beyond "hooks first, a hook
+`deny` stands, a hook never overrides a deny rule", and anything a model would
+do differently after a refusal (the transcript is canned).
 
 It never calls a model and never reads a key.
 """
@@ -25,6 +40,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -51,8 +68,75 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--add-dir", nargs="+", action="extend", default=[])
     p.add_argument("--no-session-persistence", action="store_true")
     p.add_argument("--bare", action="store_true")
+    p.add_argument("--setting-sources")
+    p.add_argument("--strict-mcp-config", action="store_true")
+    p.add_argument("--include-hook-events", action="store_true")
     p.add_argument("--model")
     return p
+
+
+def setting_sources(value: str | None) -> list[str] | None:
+    """The real CLI's parser: `""` is none, else user, project and local only."""
+    if value is None:
+        return None
+    if value == "":
+        return []
+    out = []
+    for name in (v.strip() for v in value.split(",")):
+        if name not in ("user", "project", "local"):
+            raise ValueError(
+                f"Invalid setting source: {name}. Valid options are: user, project, local"
+            )
+        out.append(name)
+    return out
+
+
+class Hooks:
+    """The settings file's command hooks, run the way Claude Code runs them."""
+
+    def __init__(self, settings: dict[str, Any], *, enabled: bool) -> None:
+        self.table = (
+            (settings.get("hooks") or {}) if enabled and not settings.get("disableAllHooks") else {}
+        )
+
+    def _commands(self, event: str, tool: str) -> list[str]:
+        out = []
+        for group in self.table.get(event) or []:
+            matcher = str(group.get("matcher") or "*")
+            if matcher != "*" and not re.fullmatch(matcher, tool):
+                continue
+            out += [h["command"] for h in group.get("hooks") or [] if h.get("type") == "command"]
+        return out
+
+    def run(self, event: str, tool: str, payload: dict[str, Any]) -> tuple[bool, str]:
+        """(denied, reason). Only PreToolUse can deny."""
+        for command in self._commands(event, tool):
+            done = subprocess.run(
+                command, shell=True, input=json.dumps(payload), capture_output=True,
+                text=True, check=False, timeout=60,
+            )  # fmt: skip
+            if event != "PreToolUse":
+                continue
+            if done.returncode == 2:
+                return True, done.stderr.strip()
+            if done.returncode == 0 and done.stdout.strip():
+                try:
+                    out = json.loads(done.stdout)
+                except json.JSONDecodeError:
+                    continue
+                specific = out.get("hookSpecificOutput") or {}
+                if specific.get("permissionDecision") == "deny":
+                    return True, str(specific.get("permissionDecisionReason", ""))
+        return False, ""
+
+
+def execute(command: str, cwd: Path) -> tuple[str, bool]:
+    """Run a canned shell command for real. `uv run python` is this interpreter."""
+    real = re.sub(r"^\s*uv run python\b", shlex.quote(sys.executable), command)
+    done = subprocess.run(
+        ["/bin/sh", "-c", real], cwd=cwd, capture_output=True, text=True, check=False, timeout=120
+    )
+    return (done.stdout + done.stderr).strip(), done.returncode != 0
 
 
 class Rules:
@@ -146,8 +230,21 @@ def main(argv: list[str] | None = None) -> int:
         "{{WORK}}": str(cwd.parent),
         "{{GATES}}": os.environ.get("AGENTTWIN_GATES_COMMAND", "uv run tools/gates.py ."),
     }
+    try:
+        setting_sources(args.setting_sources)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     settings = json.loads(Path(args.settings).read_text()) if args.settings else {}
     rules = Rules(settings, args.permission_mode)
+    hooks = Hooks(settings, enabled=not args.bare)
+    executed = set(plan.get("execute") or [])
+    session = {
+        "session_id": "stub",
+        "transcript_path": "",
+        "cwd": str(cwd),
+        "permission_mode": args.permission_mode,
+    }
 
     events = [
         fill(json.loads(line), paths)
@@ -164,16 +261,38 @@ def main(argv: list[str] | None = None) -> int:
                 uses[block["id"]] = block
             elif block.get("type") == "tool_result":
                 use = uses.get(block.get("tool_use_id", ""))
-                if use is not None and rules.denied(use["name"], use["input"]):
-                    block["content"] = rules.message(use["name"], use["input"])
+                if use is None:
+                    continue
+                name, tool_input = use["name"], use["input"]
+                call = {**session, "tool_name": name, "tool_input": tool_input,
+                        "tool_use_id": use["id"]}  # fmt: skip
+                hook_denied, reason = hooks.run(
+                    "PreToolUse", name, {**call, "hook_event_name": "PreToolUse"}
+                )
+                if hook_denied:
+                    # The stub's wording; the runner reads the hook's own log.
+                    block["content"] = f"Hook PreToolUse:{name} denied this tool use: {reason}"
+                    block["is_error"] = True
+                    continue
+                if rules.denied(name, tool_input):
+                    block["content"] = rules.message(name, tool_input)
                     block["is_error"] = True
                     denials.append(
-                        {
-                            "tool_name": use["name"],
-                            "tool_use_id": use["id"],
-                            "tool_input": use["input"],
-                        }
+                        {"tool_name": name, "tool_use_id": use["id"], "tool_input": tool_input}
                     )
+                    continue
+                if name == "Bash" and use["id"] in executed:
+                    block["content"], block["is_error"] = execute(
+                        str(tool_input.get("command", "")), cwd
+                    )
+                errored = bool(block.get("is_error"))
+                hooks.run(
+                    "PostToolUseFailure" if errored else "PostToolUse",
+                    name,
+                    {**call, "hook_event_name": "PostToolUseFailure" if errored else "PostToolUse",
+                     **({"error": block.get("content")} if errored
+                        else {"tool_response": block.get("content")})},
+                )  # fmt: skip
         if event.get("type") == "result":
             # The changes the run made through the tools that were allowed.
             failed = apply(plan.get("patches") or {}, dirs)

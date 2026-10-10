@@ -431,6 +431,9 @@ def test_the_transcript_is_kept_whole(lab: dict[str, Path], day_run: Path) -> No
     assert stream.result["subtype"] == "success"
     assert record["attempts"][0]["events"] == stream.events
     argv_ = record["attempts"][0]["argv"]
-    for flag in ("-p", "stream-json", "--verbose", "--max-turns", "--settings", "--bare"):
+    flags = ("-p", "stream-json", "--verbose", "--max-turns", "--settings", "--setting-sources")
+    for flag in flags:
         assert flag in argv_
+    assert "--bare" not in argv_, "--bare skips hooks"
+    assert argv_[argv_.index("--setting-sources") + 1] == "", "no user, project or local settings"
     assert "# Fix" not in " ".join(argv_), "the prompt goes on stdin, never the command line"

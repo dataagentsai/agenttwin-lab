@@ -71,6 +71,7 @@ protected:
   - {path: "agenttwin/**", why: "the world format and its oracles (AWD), linked from the main checkout"}
   - {path: "ai-assurance-catalog/**", why: "the assurance catalog (AAC), linked from the main checkout"}
   - {path: "ai-harness-catalog/**", why: "the harness catalog (AHC), linked from the main checkout"}
+  - {path: "base/**", why: "the copies at the base the judge runs the new scenario on before the fix"}
 
 # Paths the fixer may change, where a person approves before merge: a spec
 # change is the owner's decision (T-083).

@@ -28,11 +28,32 @@ The flags, checked against `claude --help` on Claude Code 2.1.241 (11 Oct
   is refused.
 - `--add-dir <dir>`: the specifications worktree, beside the agent's.
 - `--no-session-persistence`: nothing saved to resume (`--print` only).
-- `--bare`: no hooks, no CLAUDE.md discovery, no auto-memory, and auth
-  strictly from `ANTHROPIC_API_KEY`, so the brief is the whole context on any
-  machine. **It skips hooks**: a hook layer in 3.5 means dropping it for
-  `--setting-sources`.
+- `--setting-sources ""`: load **none** of the user, project and local
+  settings. Read from the 2.1.241 bundle: the parser returns `[]` for the
+  empty string, and `flagSettings` (our `--settings` file, with its hooks) and
+  `policySettings` (managed; none on this laptop) are always added. This
+  replaces 3.4's `--bare`, which skips hooks (`--help`: "skip hooks, LSP, ...
+  and CLAUDE.md auto-discovery. Sets CLAUDE_CODE_SIMPLE=1").
+- `--strict-mcp-config`: no MCP servers from any configuration (none given).
+- `--include-hook-events`: the hooks' lifecycle events go into the stream-json
+  transcript too.
 - `--model <m>`: the model, from the fixer config.
+
+What `--bare` also did, kept by other means (`ENV` below):
+
+- `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`: no CLAUDE.md discovery (the bundle's
+  `isClaudeMdLoadingDisabled` reads it). The brief is the whole context.
+- `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`: no auto-memory (read first in the
+  bundle's auto-memory check, before `CLAUDE_CODE_SIMPLE`).
+- `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`: no update checks or telemetry.
+- Auth: outside bare mode the bundle's key resolver, when non-interactive
+  (`-p`) and `ANTHROPIC_API_KEY` is set, returns that key first. `RealClaude`
+  refuses to start without it. What bare mode adds and this does not: bare
+  never *reads* the keychain; here an OAuth login on the machine could still be
+  read, though the key is used. Not exercised: no real model call is made
+  until the owner's key exists.
+- Not set: `CLAUDE_CODE_SIMPLE`, which is what `--bare` sets, and would skip
+  the hooks again.
 """
 
 from __future__ import annotations
@@ -51,6 +72,13 @@ from agenttwin_lab.ports import FixerCall, FixerRun
 
 KEY = "ANTHROPIC_API_KEY"
 VERIFIED_ON = "2.1.241"
+ENV = {
+    "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
+    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+}
+"""What `--bare` gave that the hooks-on command line keeps by environment."""
+WRITE_MATCHER = "Bash|Edit|Write|MultiEdit|NotebookEdit"
 """The Claude Code version the flags above were checked against."""
 
 
@@ -76,7 +104,10 @@ def argv(executable: Sequence[str], call: FixerCall, *, model: str | None) -> li
         "--permission-mode",
         "dontAsk",
         "--no-session-persistence",
-        "--bare",
+        "--setting-sources",
+        "",
+        "--strict-mcp-config",
+        "--include-hook-events",
     ]
     for d in call.add_dirs:
         out += ["--add-dir", str(d)]
@@ -91,24 +122,34 @@ def settings(
     protected: Iterable[str],
     shell_allow: Iterable[str],
     shell_deny: Iterable[str],
+    mains: Iterable[Path] = (),
+    hooks: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """The settings file Claude Code is given: the permission rules for the
-    protected paths (T-083, cut down; 3.5 hardens them).
+    protected paths and the main checkouts, and the lab's hooks.
 
     Paths are absolute (`//` prefix, Claude Code's form for an absolute path),
     so the rules mean the same whichever directory the session starts in.
     Deny beats allow. Each protected glob is denied to `Edit` (which Claude
-    Code applies to every file-editing tool) and to `Write` by name.
+    Code applies to every file-editing tool) and to `Write` by name; so is
+    everything in a main checkout.
+
+    `hooks` maps `PreToolUse` and `PostToolUse` to a command: the pre hook sees
+    every write-capable tool call (`WRITE_MATCHER`), the post hook every call,
+    successful (`PostToolUse`) or not (`PostToolUseFailure`).
     """
     root = workdir.resolve()
     deny: list[str] = []
     for glob in protected:
         target = f"/{root}/{glob}"
         deny += [f"Edit({target})", f"Write({target})"]
+    for main in mains:
+        target = f"/{Path(main).resolve()}/**"
+        deny += [f"Edit({target})", f"Write({target})"]
     deny += [f"Bash({c})" for c in shell_deny]
     allow = ["Read", "Glob", "Grep", "Edit", "Write", "TodoWrite"]
     allow += [f"Bash({c})" for c in shell_allow]
-    return {
+    out: dict[str, Any] = {
         "permissions": {
             "defaultMode": "dontAsk",
             "allow": allow,
@@ -116,6 +157,24 @@ def settings(
             "disableBypassPermissionsMode": "disable",
         }
     }
+    if hooks:
+
+        def entry(matcher: str, command: str) -> list[dict[str, Any]]:
+            return [
+                {
+                    "matcher": matcher,
+                    "hooks": [{"type": "command", "command": command, "timeout": 30}],
+                }
+            ]
+
+        out["disableAllHooks"] = False
+        out["hooks"] = {}
+        if "PreToolUse" in hooks:
+            out["hooks"]["PreToolUse"] = entry(WRITE_MATCHER, hooks["PreToolUse"])
+        if "PostToolUse" in hooks:
+            out["hooks"]["PostToolUse"] = entry("*", hooks["PostToolUse"])
+            out["hooks"]["PostToolUseFailure"] = entry("*", hooks["PostToolUse"])
+    return out
 
 
 def _execute(command: list[str], call: FixerCall, env: Mapping[str, str]) -> FixerRun:
@@ -142,10 +201,11 @@ def _execute(command: list[str], call: FixerCall, env: Mapping[str, str]) -> Fix
 
 
 def _base_env(extra: Mapping[str, str]) -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if k != KEY}
+    env = {k: v for k, v in os.environ.items() if k not in (KEY, "CLAUDE_CODE_SIMPLE")}
     # Frozen: nothing the fixer runs rewrites a lock file, so the diff is the
     # fixer's change and not uv's.
     env["UV_FROZEN"] = "1"
+    env.update(ENV)
     env.update(extra)
     return env
 
@@ -307,6 +367,7 @@ def read_stream(path: Path) -> Stream:
 
 
 __all__ = [
+    "ENV",
     "FILE_TOOLS",
     "KEY",
     "VERIFIED_ON",
@@ -315,6 +376,7 @@ __all__ = [
     "Stream",
     "StubClaude",
     "ToolUse",
+    "WRITE_MATCHER",
     "argv",
     "read_stream",
     "settings",
