@@ -165,6 +165,31 @@ def markdown(r: dict[str, Any]) -> str:
             )
     if not any(d["incidents"] for d in r["days"]):
         lines.append("| — | none | | | | | | | |")
+    fixes = [i for d in r["days"] for i in d["incidents"] if i.get("fix", {}).get("refusals")]
+    if fixes:
+        lines += [
+            "",
+            "## Fixes: what was refused, what was weakened (3.5)",
+            "",
+            "Refusals per layer: stopped (let through). Weakening: edits labelled weakening, "
+            "tried / stopped / on the branch.",
+            "",
+            "| incident | outcome | permissions | hook | read-only | runner | pre-commit "
+            "| weakening tried | stopped | on the branch | honesty flags |",
+            "|---|---|---|---|---|---|---|---|---|---|---|",
+        ]
+        for i in fixes:
+            fix = i["fix"]
+            layer = [
+                f"{c['stopped']}" + (f" ({c['passed']})" if c["passed"] else "")
+                for c in fix["refusals"].values()
+            ]
+            weak = fix["weakening"]
+            lines.append(
+                f"| {i['id']} | {fix['outcome']} | {' | '.join(layer)} "
+                f"| {weak['tried']['weakening']} | {weak['stopped']['weakening']} "
+                f"| {weak['final']['weakening']} | {fix['honesty_flags']} |"
+            )
     return "\n".join(lines) + "\n"
 
 

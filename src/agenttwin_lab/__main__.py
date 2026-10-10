@@ -60,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     fix.add_argument("--seed", type=int, default=None)
     fix.add_argument("--config", type=Path, default=CONFIG)
     fix.add_argument("--adapter", choices=["stub", "real-claude"], default=None)
-    fix.add_argument("--fixture", default=None, help="stub only: honest | gaming")
+    fix.add_argument("--fixture", default=None, help="stub only: honest | gaming | spec-gamer")
     fix.add_argument("--gates", choices=["incident-scenarios", "four-gates"], default=None)
     fix.add_argument("--max-turns", type=int, default=None)
     fix.add_argument("--open-pr", action="store_true", help="push the branch and open PRs (gh)")

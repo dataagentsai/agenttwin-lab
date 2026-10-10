@@ -96,9 +96,13 @@ $gaps
 
 ## Protected paths
 
-You may not change these. The permission rules refuse any attempt, and **every
-attempt, refused or not, is recorded** in the fix record a person reads. A
-change that makes a check pass by weakening it is not a fix.
+You may not change these, by any tool. The permission rules and a hook refuse
+the attempt, the files are read-only, and the runner reverts any change to them
+before it commits, however it was made, shell included. **Every attempt,
+refused or not, is recorded** in the fix record a person reads, and every edit
+you make or try is classified: a check removed or loosened, a test skipped, a
+rule narrowed. A change that makes a check pass by weakening it is not a fix,
+and a PR that does not say what it weakened is flagged.
 
 $protected
 

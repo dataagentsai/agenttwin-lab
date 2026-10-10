@@ -630,7 +630,9 @@ def test_the_day_report_carries_time_to_fix(lab: dict[str, Path], day_run: Path)
     (incident,) = [i for d in report["days"] for i in d["incidents"] if i["id"] == INCIDENT]
     assert incident["time_to_fix_s"] == record["time_to_fix_s"] > 0
     assert incident["fix"]["outcome"] == "fixed"
-    assert "s (wall)" in (record["_run"] / "report.md").read_text()
+    text = (record["_run"] / "report.md").read_text()
+    assert "s (wall)" in text
+    assert f"| {INCIDENT} | fixed | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |" in text
 
 
 def test_the_transcript_is_kept_whole(lab: dict[str, Path], day_run: Path) -> None:

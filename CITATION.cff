@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use this work, please cite it as below."
 type: software
 title: "AgentTwin Lab: an agent runs simulated days in an AgentTwin world, and the world watches it"
-version: "0.1.0"
+version: "0.3.0"
 date-released: "2026-10-11"
 authors:
   - given-names: Basant

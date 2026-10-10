@@ -1,6 +1,6 @@
 [project]
 name = "agenttwin-lab"
-version = "0.2.0"
+version = "0.3.0"
 description = "AgentTwin Lab: an agent runs simulated days in an AgentTwin world, and the world watches it."
 requires-python = ">=3.13"
 license = "Apache-2.0"
