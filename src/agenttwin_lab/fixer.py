@@ -218,6 +218,11 @@ def attempted(
             entry.update(
                 path=relative,
                 writes=use.name in FILE_TOOLS,
+                # What it tried to write, whole: an intermediate state (a check
+                # written and then taken out again) is in no diff.
+                input={k: v for k, v in use.input.items() if k not in ("file_path",)}
+                if use.name in FILE_TOOLS
+                else {},
                 protected=protected.why if protected else None,
                 approval_required=approval.why if approval else None,
             )
@@ -337,7 +342,7 @@ class Fixer:
         attempts: list[dict[str, Any]] = []
         tried: list[dict[str, Any]] = []
         commits: dict[str, list[str]] = {name: [] for name in ws.trees}
-        prompt, verdict, last_stream = brief, None, Stream()
+        prompt, verdict = brief, None
         outcome, fixed_at = "handed-to-person", None
         for n in range(1, config.limits.retries + 2):
             began = time.monotonic()
@@ -358,7 +363,7 @@ class Fixer:
                 attempts.append({"n": n, "started": False, "why": str(exc)})
                 outcome = "not-started"
                 break
-            stream = last_stream = read_stream(ran.transcript)
+            stream = read_stream(ran.transcript)
             tried += attempted(config, ws, n, stream)
             title = (stream.final_text.splitlines() or [f"{incident['id']} attempt {n}"])[0]
             message = f"{incident['id']} attempt {n}: {title.lstrip('# ').strip()}"[:200]
@@ -389,6 +394,7 @@ class Fixer:
                         if k in stream.result
                     },  # fmt: skip
                     "tool_uses": len(stream.tool_uses),
+                    "pr_text": stream.final_text,
                     "denied": sum(u.denied for u in stream.tool_uses),
                     "judged": verdict,
                     "elapsed_s": round(time.monotonic() - began, 3),
@@ -454,7 +460,9 @@ class Fixer:
             "approval_required": [f for f in changed if f["approval_required"]],
             "scenario_expectations": scenario_changes,
             "commits": commits,
-            "fixer_pr_text": last_stream.final_text,
+            "fixer_pr_text": next(
+                (a["pr_text"] for a in reversed(attempts) if a.get("pr_text")), ""
+            ),
             "judged": verdict,
             "outcome": outcome,
             "time_to_fix_s": round(fixed_at - started, 3) if fixed_at else None,
