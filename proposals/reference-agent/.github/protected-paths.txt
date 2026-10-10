@@ -1,0 +1,19 @@
+# reference-agent: paths a pull request may change only with the label
+# `protected-change-approved`, added by a person after the PR's last push.
+# PROPOSED by agenttwin-lab slice 3.5 (agenttwin-lab/proposals/reference-agent);
+# not yet in this repository. The same paths agenttwin-lab's fixer.yaml protects.
+
+# The check itself.
+.github/**
+
+# The yardstick: its scenarios and their expectations, the worlds they run in.
+scenarios/*.yaml
+worlds/**
+
+# How the gates reach the agent, and the accepted gaps the harness gate reads.
+gates.yaml
+harness-profile.yaml
+evals/gate_binding.py
+
+# A new scenario joins the yardstick only after a person reviews it.
+scenarios/incoming/**

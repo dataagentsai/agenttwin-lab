@@ -1,0 +1,4 @@
+# clean-ai-engineering. PROPOSED by agenttwin-lab slice 3.5; not yet in this repository.
+# CODEOWNERS routes review requests; it gates a merge only if the owner turns
+# on "require review from code owners", which nothing here changes.
+*    @basantchoudhary

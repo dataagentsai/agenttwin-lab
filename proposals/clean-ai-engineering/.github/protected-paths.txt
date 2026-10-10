@@ -1,0 +1,15 @@
+# clean-ai-engineering: paths a pull request may change only with the label
+# `protected-change-approved`, added by a person after the PR's last push.
+# PROPOSED by agenttwin-lab slice 3.5 (agenttwin-lab/proposals/clean-ai-engineering);
+# not yet in this repository. The same paths agenttwin-lab's fixer.yaml protects.
+
+# The check itself.
+.github/**
+
+# The yardstick and the feature inventory, and the gates themselves.
+gates/**
+tools/gates.py
+
+# The specifications: a spec change is the owner's decision (T-083). A fixer
+# that narrows a rule so its failure becomes allowed changes a file here.
+drafts/**

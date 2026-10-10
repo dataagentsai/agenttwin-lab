@@ -1,0 +1,19 @@
+# agenttwin-lab (slice 3.5). The owner reviews everything; the protected paths
+# are named so a review request reaches the owner even if the default changes.
+# CODEOWNERS only routes reviews: it gates a merge only if the owner turns on
+# "require review from code owners", which this repository does not change.
+*                                   @basantchoudhary
+
+/.github/                           @basantchoudhary
+/fixer/fixer.yaml                   @basantchoudhary
+/fixer/brief.md                     @basantchoudhary
+/fixer/incidents.yaml               @basantchoudhary
+/worlds/                            @basantchoudhary
+/days/                              @basantchoudhary
+/src/agenttwin_lab/guard.py         @basantchoudhary
+/src/agenttwin_lab/protect.py       @basantchoudhary
+/src/agenttwin_lab/readonly.py      @basantchoudhary
+/src/agenttwin_lab/weakening.py     @basantchoudhary
+/src/agenttwin_lab/fixgates.py      @basantchoudhary
+/src/agenttwin_lab/fixer.py         @basantchoudhary
+/tests/                             @basantchoudhary

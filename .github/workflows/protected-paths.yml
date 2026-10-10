@@ -1,0 +1,106 @@
+# Protected paths, server side (agenttwin-lab slice 3.5, layer 5).
+#
+# A pull request that changes a path listed in .github/protected-paths.txt
+# fails this check unless a person (not a bot) has added the label
+# `protected-change-approved`, after the PR's last push. A push that changes a
+# protected path takes the label off again: an approval is for the change a
+# person saw.
+#
+# It runs on `pull_request_target`, so the workflow and the list are read from
+# the base branch: a PR cannot edit the check that judges it. It never checks
+# out or runs the PR's code; it only asks the API which files changed.
+#
+# It is a check, not a gate, until the owner makes it required. This file does
+# not enable branch protection or change any repository setting; the owner's
+# own work goes straight to main and never meets it.
+name: protected-paths
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: write   # to take the approval label off after a new push
+  issues: read           # to read who added the label
+
+concurrency:
+  group: protected-paths-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  protected-paths:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read the protected list from the base branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: .github
+          persist-credentials: false
+
+      - name: Decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          ACTION: ${{ github.event.action }}
+          LABEL: protected-change-approved
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/pulls/$PR/files" --paginate \
+            --jq '.[] | .filename, (.previous_filename // empty)' | sort -u > changed.txt
+          gh api "repos/$REPO/issues/$PR/events" --paginate \
+            --jq '.[] | select(.event == "labeled" or .event == "unlabeled")
+                      | select(.label.name == env.LABEL)
+                      | [.event, .actor.login, .actor.type, .created_at] | @tsv' > labels.tsv
+          gh api "repos/$REPO/pulls/$PR/commits" --paginate \
+            --jq '.[].commit.committer.date' | sort | tail -n 1 > last-push.txt
+          python3 - <<'PY'
+          import os, re, subprocess, sys
+          from pathlib import Path
+
+          def regex(glob):
+              out, i = "", 0
+              while i < len(glob):
+                  if glob.startswith("**", i): out += ".*"; i += 2
+                  elif glob[i] == "*": out += "[^/]*"; i += 1
+                  elif glob[i] == "?": out += "[^/]"; i += 1
+                  else: out += re.escape(glob[i]); i += 1
+              return re.compile(out)
+
+          rules = []
+          for line in Path(".github/protected-paths.txt").read_text().splitlines():
+              line = line.split("#", 1)[0].strip()
+              if line:
+                  rules.append((line, regex(line)))
+          changed = [p for p in Path("changed.txt").read_text().splitlines() if p]
+          hits = [(p, g) for p in changed for g, r in rules if r.fullmatch(p)]
+          if not hits:
+              print(f"No protected path changed ({len(changed)} file(s)).")
+              sys.exit(0)
+          print("Protected paths changed:")
+          for p, g in hits:
+              print(f"  {p}   ({g})")
+
+          # The label counts only if a person added it, and after the last push.
+          events = [l.split("\t") for l in Path("labels.tsv").read_text().splitlines() if l]
+          last = events[-1] if events else None
+          pushed = Path("last-push.txt").read_text().strip()
+          approved = (
+              last is not None and last[0] == "labeled" and last[2] == "User"
+              and last[3] >= pushed
+          )
+          if approved:
+              print(f"Approved by {last[1]} at {last[3]} (label `{os.environ['LABEL']}`).")
+              sys.exit(0)
+          if last is not None and last[0] == "labeled" and os.environ["ACTION"] == "synchronize":
+              subprocess.run(["gh", "pr", "edit", os.environ["PR"], "--repo", os.environ["REPO"],
+                              "--remove-label", os.environ["LABEL"]], check=False)
+              print("A push came after the approval: the label is taken off.")
+          why = ("no approval" if last is None or last[0] != "labeled"
+                 else "added by a bot" if last[2] != "User" else "added before the last push")
+          print(f"::error::Protected paths changed and {why}. A person reviews the change and "
+                f"adds the label `{os.environ['LABEL']}`.")
+          sys.exit(1)
+          PY

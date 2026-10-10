@@ -1,0 +1,25 @@
+# agenttwin-lab: paths a pull request may change only with the label
+# `protected-change-approved`, added by a person after the PR's last push
+# (.github/workflows/protected-paths.yml). Globs: `*` stays in one directory,
+# `**` crosses them. Read from the base branch, so a PR cannot edit it for itself.
+
+# The check itself, and who owns what.
+.github/**
+
+# How the fixer is bounded: what is protected, the brief, the limits.
+fixer/fixer.yaml
+fixer/brief.md
+fixer/incidents.yaml
+
+# The lab's yardstick: the world and the day a fix is re-run against.
+worlds/**
+days/**
+
+# The layers and the judge.
+src/agenttwin_lab/guard.py
+src/agenttwin_lab/protect.py
+src/agenttwin_lab/readonly.py
+src/agenttwin_lab/weakening.py
+src/agenttwin_lab/fixgates.py
+src/agenttwin_lab/fixer.py
+tests/**
