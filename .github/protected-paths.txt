@@ -23,3 +23,10 @@ src/agenttwin_lab/weakening.py
 src/agenttwin_lab/fixgates.py
 src/agenttwin_lab/fixer.py
 tests/**
+
+# Production: the release pointer and its records move only through a deploy a
+# person approved (`agenttwin-lab deploy`, .github/workflows/deploy.yml).
+releases/**
+src/agenttwin_lab/deploy.py
+src/agenttwin_lab/approval.py
+src/agenttwin_lab/releases.py

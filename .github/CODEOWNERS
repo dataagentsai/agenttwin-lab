@@ -17,3 +17,7 @@
 /src/agenttwin_lab/fixgates.py      @basantchoudhary
 /src/agenttwin_lab/fixer.py         @basantchoudhary
 /tests/                             @basantchoudhary
+/releases/                          @basantchoudhary
+/src/agenttwin_lab/deploy.py        @basantchoudhary
+/src/agenttwin_lab/approval.py      @basantchoudhary
+/src/agenttwin_lab/releases.py      @basantchoudhary
