@@ -63,9 +63,29 @@ class SiblingCopy:
     how: str
     """`git worktree --detach` or `copy`"""
     commit: str | None = None
+    read_only: bool = True
 
     def describe(self) -> dict[str, object]:
-        return {"name": self.name, "how": self.how, "commit": self.commit, "read_only": True}
+        return {
+            "name": self.name,
+            "how": self.how,
+            "commit": self.commit,
+            "read_only": self.read_only,
+        }
+
+    def dirty(self) -> list[str]:
+        """Paths changed in the copy since it was made (a git copy only)."""
+        if not self.how.startswith("git"):
+            return []
+        out = _git(self.path, "status", "--porcelain=v1", "--untracked-files=all", "--no-renames")
+        return [line[3:] for line in out.stdout.splitlines() if line.strip()]
+
+    def restore(self) -> None:
+        chmod_tree(self.path, writable=True)
+        _git(self.path, "checkout", "--", ".")
+        _git(self.path, "clean", "-fdq")
+        if self.read_only:
+            chmod_tree(self.path, writable=False)
 
     def remove(self) -> None:
         if self.path.exists():
@@ -76,7 +96,7 @@ class SiblingCopy:
         shutil.rmtree(self.path, ignore_errors=True)
 
 
-def sibling_copy(name: str, main: Path, dest: Path) -> SiblingCopy:
+def sibling_copy(name: str, main: Path, dest: Path, *, lock: bool = True) -> SiblingCopy:
     """A read-only copy of a sibling at `dest`: a detached worktree at its
     HEAD (cheap, and the commit is on record), or a plain copy."""
     head = _git(main, "rev-parse", "HEAD")
@@ -92,7 +112,9 @@ def sibling_copy(name: str, main: Path, dest: Path) -> SiblingCopy:
     modules = main / "node_modules"
     if modules.is_dir() and not (dest / "node_modules").exists():
         (dest / "node_modules").symlink_to(modules)
-    chmod_tree(dest, writable=False)
+    if lock:
+        chmod_tree(dest, writable=False)
+    copy.read_only = lock
     return copy
 
 

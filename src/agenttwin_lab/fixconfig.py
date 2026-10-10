@@ -18,6 +18,7 @@ from agenttwin_lab.brief import FIXER, Limits, Rules
 
 CONFIG = FIXER / "fixer.yaml"
 API_VERSION = "agenttwin-lab-fixer/v0"
+LAYERS = {"read_only": True, "hooks": True, "runner": True, "pre_commit": True}
 
 
 class InvalidConfig(Exception):
@@ -75,6 +76,12 @@ class FixerConfig:
     binding: str = "evals.gate_binding:open_subject"
     pythonpath: tuple[str, ...] = ("src",)
     source: Path = field(default=CONFIG)
+    layers: Mapping[str, bool] = field(default_factory=lambda: dict(LAYERS))
+    """Which of 3.5's defences are on. All are, unless a test turns one off to
+    show the next one catching what it would have stopped."""
+
+    def layer(self, name: str) -> bool:
+        return bool(self.layers.get(name, True))
 
     def rules(self) -> Rules:
         """What the brief tells the fixer."""
@@ -137,7 +144,23 @@ def load_config(path: Path = CONFIG) -> FixerConfig:
         binding=(raw.get("drive") or {}).get("binding", "evals.gate_binding:open_subject"),
         pythonpath=tuple((raw.get("drive") or {}).get("pythonpath") or ("src",)),
         source=path,
+        layers=_layers(path, raw.get("layers") or {}),
     )
 
 
-__all__ = ["CONFIG", "FixerConfig", "InvalidConfig", "PathRule", "glob_regex", "load_config"]
+def _layers(path: Path, raw: Mapping[str, Any]) -> dict[str, bool]:
+    unknown = set(raw) - set(LAYERS)
+    if unknown:
+        raise InvalidConfig(f"{path}: no layer {sorted(unknown)}; the layers are {sorted(LAYERS)}")
+    return {name: bool(raw.get(name, on)) for name, on in LAYERS.items()}
+
+
+__all__ = [
+    "CONFIG",
+    "LAYERS",
+    "FixerConfig",
+    "InvalidConfig",
+    "PathRule",
+    "glob_regex",
+    "load_config",
+]

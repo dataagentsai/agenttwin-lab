@@ -131,6 +131,7 @@ def log_refusal(
     means: str | None = None,
     detail: str = "",
     attempt: int | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Append one line to `refusals.jsonl`. `stopped` is whether this layer
     prevented it; `False` means it got past this layer (and a later layer may
@@ -151,6 +152,7 @@ def log_refusal(
         "why": rule.why if rule else None,
         "means": means,
         "detail": detail,
+        **(extra or {}),
     }
     if log:
         with open(log, "a") as out:

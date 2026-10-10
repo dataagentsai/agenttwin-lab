@@ -1,0 +1,13 @@
+diff --git a/drafts/examples/support-agent.aoas.yaml b/drafts/examples/support-agent.aoas.yaml
+index 9f542ae..7bed796 100644
+--- a/drafts/examples/support-agent.aoas.yaml
++++ b/drafts/examples/support-agent.aoas.yaml
+@@ -575,7 +575,7 @@ policies:
+   # said about the other two (F-037). Three subjects is the same ambiguity as two
+   # intents and belongs on the same path.
+   P-DIRECT:
+-    rule: order status and refund status are answered from the order system deterministically, with no model call, when the turn names exactly one intent from `intents` and exactly one order; a turn naming several orders, several intents, or none of either goes to the loop
++    rule: order status and refund status are answered from the order system deterministically, with no model call, and a status an outside party wrote, such as the carrier's delivery scan, may be stated as the order's own, when the turn names exactly one intent from `intents` and exactly one order; a turn naming several orders, several intents, or none of either goes to the loop
+     via: [get_order]
+     addressed_to: harness
+     concern: cost

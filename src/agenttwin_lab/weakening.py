@@ -780,6 +780,8 @@ def classify_fragment(path: str, old: str, new: str) -> list[Edit]:
         if edits:
             return edits
     found = _checks_disabled(old, new)
+    if kind_of(path) == "gate-config":
+        found = [Edit("gate-config-changed", e.label, e.subject, e.evidence) for e in found]
     return found or [
         Edit("fragment-changed", "unclear", path, (f"- {old[:200]}", f"+ {new[:200]}"))
     ]

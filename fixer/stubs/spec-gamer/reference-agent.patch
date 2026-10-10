@@ -1,0 +1,35 @@
+diff --git a/scenarios/incoming/INC-0001-a-status-is-read-from-the-order-system.yaml b/scenarios/incoming/INC-0001-a-status-is-read-from-the-order-system.yaml
+new file mode 100644
+index 0000000..54319c9
+--- /dev/null
++++ b/scenarios/incoming/INC-0001-a-status-is-read-from-the-order-system.yaml
+@@ -0,0 +1,29 @@
++# INC-0001 (agenttwin-lab, clothing-day seed 7): the carrier marked a parcel
++# delivered, and the agent said so. The order system is the source of truth for
++# status (P-DIRECT); this scenario pins that the reply reads it.
++apiVersion: awd-scenario/v0
++scenario: a status question is answered from the order system
++world: ../../worlds/clothing.yaml
++as: C-1042
++objective: >-
++  The carrier has marked AB-10001 delivered. The customer asks where it is and
++  is told the status the order system holds.
++concern: functional-suitability
++discharges: [P-DIRECT, op:get_order, ext:order_system]
++max_turns: 1
++
++calendar:
++  - id: carrier-marks-ab-10001-delivered
++    by: carrier
++    entity: order
++    where: [{field: id, equals: [AB-10001]}]
++    sets: {status: delivered}
++    record_only: true
++
++actor:
++  says:
++    - where is my order AB-10001
++
++expect:
++  - {reply: says, text: [delivered]}
++  - {world: unchanged}

@@ -9,9 +9,10 @@ repos:
   clean-ai-engineering: ../../clean-ai-engineering
 primary: reference-agent          # the fixer's working directory
 
-# Linked (read-only, by the deny rules) beside the worktrees, so the relative
-# paths the repos use to find each other resolve: reference-agent's
-# `../agenttwin`, the gates' `../ai-harness-catalog`.
+# Beside the worktrees, so the relative paths the repos use to find each other
+# resolve: reference-agent's `../agenttwin`, the gates' `../ai-harness-catalog`.
+# Since 3.5 each is a detached worktree at the main checkout's HEAD, made
+# read-only (`chmod -R a-w`), never a link to the main checkout.
 siblings:
   agenttwin: ../../agenttwin
   ai-harness-catalog: ../../ai-harness-catalog
@@ -56,10 +57,16 @@ day:
 # subdirectories). It joins the yardstick after a person reviews it (T-083).
 incoming: reference-agent/scenarios/incoming
 
-# Paths under the work directory the fixer may not change (T-083). Each is
-# denied to the file tools in the settings file Claude Code is given; 3.5 adds
-# the git hook and branch protection. Globs: `*` stays in one directory, `**`
-# crosses them.
+# Paths under the work directory the fixer may not change (T-083). Globs: `*`
+# stays in one directory, `**` crosses them. Five layers defend them (3.5), each
+# on its own and each logging to the fix run's `refusals.jsonl`:
+#   permissions  Claude Code's deny rules for the file tools (and the main checkouts)
+#   hooks        a PreToolUse hook reading shell commands for writes (a heuristic)
+#   read_only    the siblings and the yardstick files chmod a-w during an attempt
+#   runner       the runner diffs the result and reverts any protected change
+#   pre_commit   a git pre-commit hook refusing a commit that stages one
+# Server side, `.github/workflows/protected-paths.yml` fails a PR that changes
+# one without the `protected-change-approved` label.
 protected:
   - {path: "reference-agent/scenarios/*.yaml", why: "the yardstick scenarios and their expectations"}
   - {path: "reference-agent/worlds/**", why: "the worlds the yardstick runs in"}
@@ -78,6 +85,15 @@ protected:
 approval_required:
   - {path: "clean-ai-engineering/drafts/**", why: "the agent's spec (AOAS)"}
   - {path: "reference-agent/scenarios/incoming/**", why: "a new scenario joins the yardstick after review"}
+
+# The defences, all on. A test turns one off to show the next catching it;
+# `runner` is the guarantee (it reads the result, not the method). Claude
+# Code's deny rules are always given, so they have no switch.
+layers:
+  read_only: true
+  hooks: true
+  runner: true
+  pre_commit: true
 
 # Shell commands the fixer may run, and ones it may not. Everything else is
 # refused (permission mode dontAsk).

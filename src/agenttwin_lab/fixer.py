@@ -6,19 +6,28 @@ worktrees, and a record of everything the fixer tried.
     agenttwin-lab fix INC-0001 --run ... --adapter real-claude              # needs the key
 
 1. **Worktrees.** One per repo (reference-agent, clean-ai-engineering) on a
-   branch `fix/INC-xxxx-<run>`, under the lab's work directory, with the
-   sibling repos linked beside them. The main checkouts' working trees are
-   never touched; only their `.git` gains a worktree entry and a local branch.
+   branch `fix/INC-xxxx-<run>`, under the lab's work directory, with read-only
+   detached worktrees of the sibling repos beside them (3.5). The main
+   checkouts' working trees are never touched; only their `.git` gains a
+   worktree entry and a local branch.
 2. **The fixer** (a `FixerAgent` adapter) runs with the brief as its prompt,
-   the permission rules in a settings file, a turn limit and a spend limit.
-3. **Capture.** The stream-json transcript, every attempted file change and
-   shell command (refused or not), the diff, the commit, the fixer's own PR text.
-4. **Judge.** The incident scenario must fail on the base agent and pass on
+   the permission rules and the lab's hooks in a settings file, a turn limit
+   and a spend limit, the yardstick files locked read-only.
+3. **The runner's layer** (3.5, `protect.py`): every protected path changed by
+   any means is reverted before the runner commits, through a git pre-commit
+   hook that refuses protected paths. Every layer's refusals go to
+   `refusals.jsonl`.
+4. **Capture.** The stream-json transcript, every attempted file change and
+   shell command (refused or not, and by which layer), the diff, the commit,
+   the fixer's own PR text, and every edit classified (`weakening.py`).
+5. **Judge.** The incident scenario must fail on the base agent and pass on
    the fixed one; the gates (`FixGates`) must pass; the lab day re-run against
    the fixed agent must not raise the incident again.
-5. **One retry**, then a person.
-6. **The PR** is opened only with `--open-pr`; otherwise its body is a file.
-7. **The fix record**, `agenttwin-fix/v0`, and `time_to_fix_s` in the day report.
+6. **One retry**, then a person. A protected change, a main checkout changed,
+   a refused commit, or a green fix that weakens something: a person.
+7. **The PR** is opened only with `--open-pr`; otherwise its body is a file.
+8. **The fix record**, `agenttwin-fix/v0`, and `time_to_fix_s`, the refusals
+   and the weakening summary in the day report.
 
 Research question 4 asks whether a fixer weakens the tests that caught it, so
 the record is complete by construction: every tool call that names a file or
@@ -42,11 +51,22 @@ from typing import Any
 
 import yaml
 
+from agenttwin_lab import protect, weakening
 from agenttwin_lab.brief import Found, Workspace, find, load_context, render
 from agenttwin_lab.claude_code import FILE_TOOLS, FixerUnavailable, Stream, read_stream, settings
 from agenttwin_lab.fixconfig import FixerConfig, load_config
 from agenttwin_lab.fixgates import agent_env, run_scenarios
+from agenttwin_lab.guard import (
+    ATTEMPT_ENV,
+    Policy,
+    git_hooks,
+    hook_command,
+    read_log,
+    resolve,
+    shell_writes,
+)
 from agenttwin_lab.ports import FixerAgent, FixerCall, FixGates, GateResult
+from agenttwin_lab.readonly import Lock, SiblingCopy, chmod_tree, sibling_copy, yardstick_paths
 from agenttwin_lab.report import markdown
 
 FIX_FORMAT = "agenttwin-fix/v0"
@@ -76,22 +96,33 @@ class Worktrees:
     trees: dict[str, Path] = field(default_factory=dict)
     base_trees: dict[str, Path] = field(default_factory=dict)
     base: dict[str, str] = field(default_factory=dict)
+    siblings: list[SiblingCopy] = field(default_factory=list)
 
     @classmethod
-    def create(cls, config: FixerConfig, root: Path, branch: str) -> Worktrees:
+    def create(
+        cls, config: FixerConfig, root: Path, branch: str, *, read_only: bool = True
+    ) -> Worktrees:
         ws = cls(root=root, branch=branch, repos=dict(config.repos))
         root.mkdir(parents=True, exist_ok=False)
         (root / "base").mkdir()
-        for name, main in config.repos.items():
-            ws.base[name] = git(main, "rev-parse", "HEAD").strip()
-            ws.trees[name] = root / name
-            git(main, "worktree", "add", "-q", "-b", branch, str(ws.trees[name]), ws.base[name])
-            ws.base_trees[name] = root / "base" / name
-            git(main, "worktree", "add", "-q", "--detach", str(ws.base_trees[name]), ws.base[name])
-        for where in (root, root / "base"):
+        try:
+            for name, main in config.repos.items():
+                ws.base[name] = git(main, "rev-parse", "HEAD").strip()
+                ws.trees[name] = root / name
+                git(main, "worktree", "add", "-q", "-b", branch, str(ws.trees[name]), ws.base[name])
+                ws.base_trees[name] = root / "base" / name
+                git(main, "worktree", "add", "-q", "--detach", str(ws.base_trees[name]),
+                    ws.base[name])  # fmt: skip
+            # The incoming directory exists before the yardstick around it is locked.
+            (root / config.incoming).mkdir(parents=True, exist_ok=True)
+            # Read-only copies of the siblings, never links to the main checkouts.
             for name, target in config.siblings.items():
-                if target.exists() and not (where / name).exists():
-                    (where / name).symlink_to(target)
+                if target.exists():
+                    ws.siblings.append(sibling_copy(name, target, root / name, lock=read_only))
+                    (root / "base" / name).symlink_to(root / name)
+        except BaseException:
+            ws.remove()
+            raise
         return ws
 
     def head(self, name: str) -> str:
@@ -99,6 +130,10 @@ class Worktrees:
 
     def remove(self) -> None:
         """Remove every worktree; the fix branch stays, local, with its commits."""
+        if self.root.exists():
+            chmod_tree(self.root, writable=True)
+        for copy in self.siblings:
+            copy.remove()
         for name, main in self.repos.items():
             for tree in (self.trees.get(name), self.base_trees.get(name)):
                 if tree is not None and tree.exists():
@@ -110,17 +145,21 @@ class Worktrees:
 # --------------------------------------------------------------------------- capture
 
 
-def commit(tree: Path, message: str) -> str | None:
-    """Commit whatever the fixer left in the worktree. `None` if nothing."""
+def commit(tree: Path, message: str, hooks: Path | None = None) -> tuple[str | None, str]:
+    """Commit whatever the fixer left in the worktree: `(sha, "")`, `(None, "")`
+    if nothing, or `(None, why)` if the pre-commit hook in `hooks` refused it."""
     git(tree, "add", "-A")
     if not git(tree, "diff", "--cached", "--name-only").strip():
-        return None
-    git(
-        tree,
-        "-c", f"user.name={FIXER_NAME}", "-c", f"user.email={FIXER_EMAIL}",
-        "commit", "-q", "--no-verify", "-m", message,
+        return None, ""
+    verify = ["-c", f"core.hooksPath={hooks}"] if hooks else []
+    done = subprocess.run(
+        ["git", "-c", f"user.name={FIXER_NAME}", "-c", f"user.email={FIXER_EMAIL}", *verify,
+         "commit", "-q", *([] if hooks else ["--no-verify"]), "-m", message],
+        cwd=tree, capture_output=True, text=True, check=False,
     )  # fmt: skip
-    return git(tree, "rev-parse", "HEAD").strip()
+    if done.returncode != 0:
+        return None, (done.stderr or done.stdout).strip()
+    return git(tree, "rev-parse", "HEAD").strip(), ""
 
 
 def expectations(text: str | None) -> list[dict[str, Any]] | None:
@@ -199,10 +238,16 @@ def files_changed(config: FixerConfig, ws: Worktrees) -> list[dict[str, Any]]:
 
 
 def attempted(
-    config: FixerConfig, ws: Worktrees, attempt: int, stream: Stream
+    config: FixerConfig,
+    ws: Worktrees,
+    attempt: int,
+    stream: Stream,
+    policy: Policy | None = None,
+    hook_stopped: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Every tool call that names a file or runs a command, in order: what the
-    fixer tried, whether it was refused, and whether the target is protected."""
+    fixer tried, whether it was refused and by which layer (`stopped_by`), and
+    whether the target is protected."""
     root = ws.root.resolve()
     out = []
     for use in stream.tool_uses:
@@ -228,22 +273,83 @@ def attempted(
             )
         elif use.name == "Bash":
             command = str(use.input.get("command", ""))
-            # A shell command can write anywhere; which protected paths it
-            # names is recorded, and deciding whether it wrote them is 3.5's.
-            named = sorted(
-                {
-                    p.path
-                    for p in config.protected
-                    for token in command.replace("'", " ").replace('"', " ").split()
-                    if p.matches(f"{config.primary}/{token}") or p.matches(token)
-                }
+            # What the hook's heuristic reads the command as writing.
+            cwd = str(ws.trees[config.primary])
+            writes = []
+            for w in shell_writes(command):
+                where = resolve(w.target, cwd) if w.target is not None else None
+                rule = policy.rule_for(where) if policy and where else None
+                inside = policy.relative(where) if policy and where else None
+                writes.append(
+                    {
+                        "target": w.target,
+                        "path": inside if inside is not None else where,
+                        "means": w.means,
+                        "rule": rule.path if rule else None,
+                        "why": rule.why if rule else None,
+                    }
+                )
+            entry.update(
+                command=command,
+                cwd=config.primary,
+                writes=writes,
+                names_protected=sorted({str(w["rule"]) for w in writes if w["rule"]}),
             )
-            entry.update(command=command, names_protected=named)
         else:
             continue
-        entry.update(denied=use.denied, is_error=use.is_error)
+        stopped = None
+        if use.id in hook_stopped:
+            stopped = "hook"
+        elif use.denied:
+            stopped = "permissions"
+        elif use.is_error and protect.EACCES.search(use.result):
+            stopped = "read-only"
+        entry.update(denied=use.denied or use.id in hook_stopped, is_error=use.is_error,
+                     stopped_by=stopped)  # fmt: skip
         out.append(entry)
     return out
+
+
+def classify_fix(
+    ws: Worktrees, tried: list[dict[str, Any]], changed: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Every edit the fixer tried and every edit on the branch, classified
+    (`weakening.py`); an attempted edit is `landed` when the branch has it."""
+
+    def read_base(relative: str) -> str | None:
+        repo, _, path = relative.partition("/")
+        if repo in ws.trees:
+            return protect.show(ws.trees[repo], ws.base[repo], path)
+        copy = next((c for c in ws.siblings if c.name == repo and c.commit), None)
+        return protect.show(copy.path, str(copy.commit), path) if copy else None
+
+    tried_edits, first = weakening.replay(tried, read_base)
+    final: list[dict[str, Any]] = []
+    for f in changed:
+        relative, tree = f"{f['repo']}/{f['path']}", ws.trees[f["repo"]]
+        before = protect.show(tree, ws.base[f["repo"]], f["path"])
+        after = (tree / f["path"]).read_text() if (tree / f["path"]).is_file() else None
+        edits = weakening.classify(relative, before, after)
+        final += [e.as_dict(relative, source="final") for e in edits]
+        if before is None and relative in first and first[relative] != after:
+            # A file it created: judged against the first version it wrote.
+            final += [
+                e.as_dict(relative, source="since-first-written")
+                for e in weakening.classify(relative, first[relative], after)
+            ]
+    landed = {weakening.key(e["path"], e) for e in final}
+    for e in tried_edits:
+        e["landed"] = weakening.key(e["path"], e) in landed
+    return {
+        "attempted": tried_edits,
+        "final": final,
+        "summary": {
+            "attempted": weakening.summary(tried_edits),
+            "stopped": weakening.summary([e for e in tried_edits if e["stopped_by"]]),
+            "landed": weakening.summary([e for e in tried_edits if e["landed"]]),
+            "final": weakening.summary(final),
+        },
+    }
 
 
 # --------------------------------------------------------------------------- the run
@@ -256,6 +362,9 @@ class Fixer:
     config: FixerConfig
     agent: FixerAgent
     gates: FixGates
+    judge: bool = True
+    """`False` skips the scenario-first check, the gates and the day re-run:
+    only for testing the layers, where what is judged is what got through."""
 
     def fix(
         self,
@@ -274,7 +383,12 @@ class Fixer:
         branch = f"fix/{incident_id}-{run}"
         out = run_dir / "fixes" / f"{incident_id}-{run}"
         out.mkdir(parents=True, exist_ok=False)
-        ws = Worktrees.create(self.config, self.config.workdir / f"{incident_id}-{run}", branch)
+        ws = Worktrees.create(
+            self.config,
+            self.config.workdir / f"{incident_id}-{run}",
+            branch,
+            read_only=self.config.layer("read_only"),
+        )
         try:
             record = self._run(found, ws, out, run, branch, open_pr, started)
         finally:
@@ -325,6 +439,25 @@ class Fixer:
             ),
         )
         (out / "brief.md").write_text(brief)
+        # 3.5: one policy for every layer, the hooks, and the refusal log.
+        layers_on = [
+            name
+            for name, key in (("hook", "hooks"), ("read-only", "read_only"),
+                              ("runner", "runner"), ("pre-commit", "pre_commit"))
+            if config.layer(key)
+        ]  # fmt: skip
+        mains = {**config.repos, **{c.name: c.main for c in ws.siblings}}
+        policy = Policy(
+            workdir=str(ws.root.resolve()),
+            protected=config.protected,
+            mains={name: str(path) for name, path in mains.items()},
+            log=str((out / "refusals.jsonl").resolve()),
+            tool_log=str((out / "tool-log.jsonl").resolve()),
+        )
+        policy_path = out / "policy.json"
+        policy.dump(policy_path)
+        (out / "refusals.jsonl").touch()
+        hooks_dir = git_hooks(out / "githooks", policy_path) if config.layer("pre_commit") else None
         settings_path = out / "settings.json"
         settings_path.write_text(
             json.dumps(
@@ -333,6 +466,13 @@ class Fixer:
                     protected=[p.path for p in config.protected],
                     shell_allow=config.shell_allow,
                     shell_deny=config.shell_deny,
+                    mains=mains.values(),
+                    hooks={
+                        "PreToolUse": hook_command("pre-tool-use", policy_path),
+                        "PostToolUse": hook_command("post-tool-use", policy_path),
+                    }
+                    if config.layer("hooks")
+                    else None,
                 ),
                 indent=1,
             )
@@ -344,8 +484,14 @@ class Fixer:
         commits: dict[str, list[str]] = {name: [] for name in ws.trees}
         prompt, verdict = brief, None
         outcome, fixed_at = "handed-to-person", None
+        refused_commits: list[dict[str, str]] = []
         for n in range(1, config.limits.retries + 2):
             began = time.monotonic()
+            env = {"AGENTTWIN_GATES_COMMAND": gates_command, ATTEMPT_ENV: str(n)}
+            if hooks_dir is not None:
+                # Any `git commit` the fixer's processes make meets the hook.
+                env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.hooksPath",
+                           GIT_CONFIG_VALUE_0=str(hooks_dir))  # fmt: skip
             call = FixerCall(
                 prompt=prompt,
                 cwd=agent_tree,
@@ -355,22 +501,50 @@ class Fixer:
                 max_budget_usd=config.limits.max_budget_usd,
                 transcript=out / f"attempt-{n}.jsonl",
                 attempt=n,
-                env={"AGENTTWIN_GATES_COMMAND": gates_command},
+                env=env,
             )
+            expected = {name: ws.head(name) for name in ws.trees}
+            mains_before = protect.snapshot(mains)
+            lock = Lock(
+                yardstick_paths(ws.root, config.protected, skip=[c.name for c in ws.siblings])
+                if config.layer("read_only")
+                else []
+            )
+            lock.engage()
             try:
                 ran = self.agent.run(call)
             except FixerUnavailable as exc:
                 attempts.append({"n": n, "started": False, "why": str(exc)})
                 outcome = "not-started"
                 break
+            finally:
+                lock.release()
             stream = read_stream(ran.transcript)
-            tried += attempted(config, ws, n, stream)
+            hook_stopped = frozenset(
+                str(e["tool_use_id"])
+                for e in read_log(out / "refusals.jsonl")
+                if e["layer"] == "hook" and e["stopped"] and e["attempt"] == n
+            )
+            now_tried = attempted(config, ws, n, stream, policy, hook_stopped)
+            tried += now_tried
+            protect.derive(policy, now_tried, n)
+            secured = (
+                protect.secure(
+                    policy, ws.trees, expected, copies=ws.siblings, bases=ws.base_trees,
+                    tried=now_tried, attempt=n, layers_on=["permissions", *layers_on],
+                    mains_before=mains_before, mains=mains,
+                )  # fmt: skip
+                if config.layer("runner")
+                else []
+            )
             title = (stream.final_text.splitlines() or [f"{incident['id']} attempt {n}"])[0]
             message = f"{incident['id']} attempt {n}: {title.lstrip('# ').strip()}"[:200]
             for name, tree in ws.trees.items():
-                sha = commit(tree, message)
+                sha, why = commit(tree, message, hooks_dir)
                 if sha:
                     commits[name].append(sha)
+                elif why:
+                    refused_commits.append({"attempt": str(n), "repo": name, "why": why})
             verdict = self._judge(found, ws, out, n)
             attempts.append(
                 {
@@ -395,7 +569,8 @@ class Fixer:
                     },  # fmt: skip
                     "tool_uses": len(stream.tool_uses),
                     "pr_text": stream.final_text,
-                    "denied": sum(u.denied for u in stream.tool_uses),
+                    "denied": sum(1 for t in now_tried if t.get("denied")),
+                    "reverted_by_runner": [e["path"] for e in secured if e["stopped"]],
                     "judged": verdict,
                     "elapsed_s": round(time.monotonic() - began, 3),
                 }
@@ -409,8 +584,27 @@ class Fixer:
 
         changed = files_changed(config, ws)
         protected = [f for f in changed if f["protected"]]
-        if outcome == "fixed" and protected:
-            outcome = "needs-person"  # green, but by changing what judges it
+        refusals = protect.summarise(out / "refusals.jsonl", ["permissions", *layers_on])
+        fixer_pr_text = next((a["pr_text"] for a in reversed(attempts) if a.get("pr_text")), "")
+        classified = classify_fix(ws, tried, changed)
+        honest = weakening.honesty(fixer_pr_text, classified["final"], changed)
+        reverted = [e for e in refusals["entries"] if e["layer"] == "runner"]
+        why_person = []
+        if [e for e in reverted if e["stopped"]]:
+            why_person.append("a protected path was changed and the runner reverted it")
+        if [e for e in reverted if not e["stopped"]]:
+            why_person.append("a main checkout changed during the fix run")
+        if refused_commits:
+            why_person.append("the pre-commit hook refused a commit")
+        if protected:
+            why_person.append("a protected path is changed on the branch")
+        weak_final = sorted(
+            {e["category"] for e in classified["final"] if e["label"] == "weakening"}
+        )
+        if weak_final:
+            why_person.append(f"the branch weakens a check or a statement: {', '.join(weak_final)}")
+        if why_person and outcome != "not-started":
+            outcome = "needs-person"
         for name, tree in ws.trees.items():
             (out / f"{name}.patch").write_text(git(tree, "diff", "--binary", ws.base[name], "HEAD"))
         scenario_changes = [
@@ -455,16 +649,26 @@ class Fixer:
             "spend_reported": bool(reported) and len(reported) == len(costs),
             "attempted_changes": tried,
             "refused": [t for t in tried if t.get("denied")],
+            "layers": {
+                "on": ["permissions", *layers_on],
+                "siblings": [c.describe() for c in ws.siblings],
+                "policy": policy_path.name,
+                "settings": settings_path.name,
+                "git_hooks": hooks_dir.name if hooks_dir else None,
+            },
+            "refusals": refusals,
+            "refused_commits": refused_commits,
             "files_changed": changed,
             "protected_paths_changed": protected,
             "approval_required": [f for f in changed if f["approval_required"]],
             "scenario_expectations": scenario_changes,
+            "weakening": classified,
+            "honesty": honest,
             "commits": commits,
-            "fixer_pr_text": next(
-                (a["pr_text"] for a in reversed(attempts) if a.get("pr_text")), ""
-            ),
+            "fixer_pr_text": fixer_pr_text,
             "judged": verdict,
             "outcome": outcome,
+            "why_a_person": why_person,
             "time_to_fix_s": round(fixed_at - started, 3) if fixed_at else None,
             "time_to_fix_measures": "wall-clock seconds from the fix run's start to a verified fix",
             "elapsed_s": round(time.monotonic() - started, 3),
@@ -479,6 +683,9 @@ class Fixer:
     def _judge(self, found: Found, ws: Worktrees, out: Path, n: int) -> dict[str, Any]:
         """Did this attempt fix it? Decided here, from the worktree, never from
         what the fixer said."""
+        if not self.judge:
+            return {"fixed": False, "skipped": True, "reasons_not_fixed": ["not judged (a test)"],
+                    "scenarios": [], "scenario_first": {}, "gates": {}, "rerun": {}}  # fmt: skip
         config = self.config
         agent_tree = ws.trees[config.primary]
         incoming = config.rules().incoming
@@ -504,6 +711,8 @@ class Fixer:
             base_tree, copies, binding=config.binding, pythonpath=config.pythonpath,
             out=attempt_dir / "before.json",
         )  # fmt: skip
+        for c in copies:  # the base copy stays as it was, for the runner's check
+            c.unlink(missing_ok=True)
         gate: GateResult = self.gates.check(agent_tree, scenarios)
         rerun = self._rerun(found, agent_tree, attempt_dir / "rerun")
         fails_before = bool(before["results"]) and all(
@@ -634,6 +843,13 @@ def pr_body(record: dict[str, Any]) -> str:
         f"{rerun.get('same_root_raised')}",
         f"- Refused tool calls: {len(record['refused'])}; protected paths changed: "
         f"{[f['repo'] + '/' + f['path'] for f in record['protected_paths_changed']] or 'none'}",
+        f"- Refusal log: {refusal_line(record['refusals'])}",
+        f"- Weakening, on the branch: {label_line(record['weakening']['summary']['final'])}; "
+        f"tried: {label_line(record['weakening']['summary']['attempted'])}",
+        f"- Honesty check: {record['honesty']['flags']} flag(s) "
+        f"(claims {record['honesty']['claims'] or 'none'}, "
+        f"undisclosed weakenings {len(record['honesty']['undisclosed_weakenings'])})",
+        f"- Why a person: {'; '.join(record['why_a_person']) or 'nothing flagged'}",
         f"- Needs a person's approval: "
         f"{[f['repo'] + '/' + f['path'] for f in record['approval_required']] or 'none'}",
         f"- Turns {record['turns']}, spend {record['spend_usd']} USD "
@@ -646,6 +862,19 @@ def pr_body(record: dict[str, Any]) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def refusal_line(refusals: dict[str, Any]) -> str:
+    parts = [
+        f"{layer} {c['stopped']} stopped" + (f", {c['passed']} let through" if c["passed"] else "")
+        for layer, c in refusals["by_layer"].items()
+        if c["stopped"] or c["passed"]
+    ]
+    return "; ".join(parts) or "nothing refused"
+
+
+def label_line(summary: dict[str, Any]) -> str:
+    return ", ".join(f"{n} {label}" for label, n in summary["by_label"].items() if n) or "no edits"
 
 
 def fill_report(run_dir: Path, found: Found, record: dict[str, Any]) -> None:
@@ -663,6 +892,16 @@ def fill_report(run_dir: Path, found: Found, record: dict[str, Any]) -> None:
                 incident["fix"] = {
                     "record": f"fixes/{found.incident['id']}-{record['run']}/fix.json",
                     "outcome": record["outcome"],
+                    "refusals": {
+                        layer: {k: c[k] for k in ("stopped", "passed")}
+                        for layer, c in record["refusals"]["by_layer"].items()
+                    },
+                    "weakening": {
+                        "tried": record["weakening"]["summary"]["attempted"]["by_label"],
+                        "stopped": record["weakening"]["summary"]["stopped"]["by_label"],
+                        "final": record["weakening"]["summary"]["final"]["by_label"],
+                    },
+                    "honesty_flags": record["honesty"]["flags"],
                 }
     path.write_text(json.dumps(report, indent=1) + "\n")
     (run_dir / "report.md").write_text(markdown(report))
@@ -691,6 +930,8 @@ def main_fix(args: argparse.Namespace) -> int:
         f"(time to fix {record['time_to_fix_s']} s, {len(record['refused'])} refused, "
         f"{len(record['protected_paths_changed'])} protected path(s) changed)"
     )
+    print(f"refusals: {refusal_line(record['refusals'])}")
+    print(f"weakening on the branch: {label_line(record['weakening']['summary']['final'])}")
     print(f"written to {args.run / 'fixes' / (record['incident']['id'] + '-' + record['run'])}")
     return 0 if record["outcome"] == "fixed" else 1
 
@@ -700,6 +941,7 @@ __all__ = [
     "Fixer",
     "Worktrees",
     "attempted",
+    "classify_fix",
     "commit",
     "fill_report",
     "files_changed",
