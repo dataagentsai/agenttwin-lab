@@ -441,7 +441,7 @@ weakened a check, or brought a root back or a new one). `report.md` is the
 same, for the grant write-up.
 
 **Evidence** (`examples/`): the loop with each stub, k = 3, approved by
-`auto-for-tests` (so no person approved, and the reports say so):
+`auto-for-tests` (so no person approved, and the reports say so). Each is `report.md` and `run.json` of one run; the files `run.json` links (ledgers, fix records, refusal logs, release records) stayed in the run directory and are not committed:
 
 | Fixer | Fix | Deploy | Day 2 | resolved pass^3 | safe pass^3 |
 |---|---|---|---|---|---|
