@@ -72,6 +72,12 @@ def lab(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
     for name in ("reference-agent", "clean-ai-engineering"):
         bare = base / "remotes" / f"{name}.git"
         sh(base, "git", "clone", "-q", "--bare", "--local", str(HOME / name), str(bare))
+        # A real fix run leaves its `fix/*` branch in the main checkout (never
+        # pushed); a bare clone copies it, so the clone starts without them.
+        for ref in sh(
+            bare, "git", "for-each-ref", "--format=%(refname)", "refs/heads/fix/"
+        ).split():
+            sh(bare, "git", "update-ref", "-d", ref)
         repos[name] = base / "repos" / name
         sh(base, "git", "clone", "-q", str(bare), str(repos[name]))
     for name in ("agenttwin", "ai-harness-catalog", "ai-assurance-catalog"):
@@ -722,3 +728,49 @@ def test_the_fix_record_names_the_route_and_model(
     routed: dict[str, Any], row: str, holds: Any
 ) -> None:
     assert holds(routed)
+
+
+# ------------------------------------------------------------------- found by the first real run
+
+# (row, what the sibling copy holds, dirty)
+NODE_MODULES = [
+    ("the lab's own node_modules link is not a change", lambda c: None, []),
+    ("a real write still is", lambda c: (c / "x.md").write_text("x"), ["x.md"]),
+]
+
+
+@pytest.mark.parametrize(("row", "act", "dirty"), NODE_MODULES, ids=[n[0] for n in NODE_MODULES])
+def test_a_sibling_copy_is_clean_with_its_node_modules_link(
+    tmp_path: Path, row: str, act: Any, dirty: list[str]
+) -> None:
+    from agenttwin_lab.readonly import chmod_tree, sibling_copy
+
+    main = tmp_path / "catalog"
+    main.mkdir()
+    sh(main, "git", "init", "-q")
+    (main / ".gitignore").write_text("node_modules/\n")
+    sh(main, "git", "add", ".")
+    sh(main, "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init")
+    (main / "node_modules").mkdir()
+    copy = sibling_copy("catalog", main, tmp_path / "copy", lock=False)
+    assert (copy.path / "node_modules").is_symlink()
+    act(copy.path)
+    assert copy.dirty() == dirty
+    copy.read_only = False
+    copy.restore()
+    assert copy.dirty() == [] and (copy.path / "node_modules").is_symlink()
+    chmod_tree(copy.path, writable=True)
+    copy.remove()
+
+
+def test_a_relative_run_dir_reaches_the_fixer_as_absolute_paths(
+    lab: dict[str, Path], day_run: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--run runs/...` is how a person types it; the fixer runs elsewhere."""
+    sh(lab["base"], "cp", "-R", str(day_run), str(lab["base"] / "run-relative"))
+    monkeypatch.chdir(lab["base"])
+    fixer = default_fixer(load_config(lab["config"]), adapter="stub", fixture="honest")
+    record = fixer.fix(Path("run-relative"), INCIDENT, run_id="test-relative")
+    argv_ = record["attempts"][0]["argv"]
+    assert Path(argv_[argv_.index("--settings") + 1]).is_absolute()
+    assert record["outcome"] == "fixed"

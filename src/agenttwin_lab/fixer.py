@@ -388,6 +388,9 @@ class Fixer:
     ) -> dict[str, Any]:
         started_wall = datetime.now(UTC)
         started = time.monotonic()
+        # Absolute: the settings, policy and log paths handed to the fixer are
+        # read from its worktree, not from where the lab was started.
+        run_dir = Path(run_dir).resolve()
         found = find(run_dir, incident_id, seed=seed)
         run = run_id or started_wall.strftime("%Y%m%dT%H%M%SZ")
         branch = f"fix/{incident_id}-{run}"

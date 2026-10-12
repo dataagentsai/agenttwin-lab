@@ -78,12 +78,18 @@ class SiblingCopy:
         if not self.how.startswith("git"):
             return []
         out = _git(self.path, "status", "--porcelain=v1", "--untracked-files=all", "--no-renames")
-        return [line[3:] for line in out.stdout.splitlines() if line.strip()]
+        # The `node_modules` link is the lab's own (below). A `.gitignore` that
+        # says `node_modules/` ignores a directory, not a link, so git lists it.
+        return [
+            line[3:]
+            for line in out.stdout.splitlines()
+            if line.strip() and line[3:] != LINKED
+        ]
 
     def restore(self) -> None:
         chmod_tree(self.path, writable=True)
         _git(self.path, "checkout", "--", ".")
-        _git(self.path, "clean", "-fdq")
+        _git(self.path, "clean", "-fdq", "-e", LINKED)
         if self.read_only:
             chmod_tree(self.path, writable=False)
 
@@ -94,6 +100,10 @@ class SiblingCopy:
             _git(self.main, "worktree", "remove", "--force", str(self.path))
             _git(self.main, "worktree", "prune")
         shutil.rmtree(self.path, ignore_errors=True)
+
+
+LINKED = "node_modules"
+"""Untracked, and linked from the main checkout into each sibling copy."""
 
 
 def sibling_copy(name: str, main: Path, dest: Path, *, lock: bool = True) -> SiblingCopy:
@@ -109,9 +119,9 @@ def sibling_copy(name: str, main: Path, dest: Path, *, lock: bool = True) -> Sib
     else:
         shutil.copytree(main, dest, symlinks=True, ignore=shutil.ignore_patterns(".venv"))
         copy = SiblingCopy(name, main, dest, "copy")
-    modules = main / "node_modules"
-    if modules.is_dir() and not (dest / "node_modules").exists():
-        (dest / "node_modules").symlink_to(modules)
+    modules = main / LINKED
+    if modules.is_dir() and not (dest / LINKED).exists():
+        (dest / LINKED).symlink_to(modules)
     if lock:
         chmod_tree(dest, writable=False)
     copy.read_only = lock
