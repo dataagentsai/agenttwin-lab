@@ -3,6 +3,7 @@
     uv run agenttwin-lab day --world worlds/clothing-day.yaml --repeat 3
     uv run agenttwin-lab brief INC-0001 --run runs/clothing-day-seed7-k2
     uv run agenttwin-lab fix INC-0001 --run runs/clothing-day-seed7-k2   # the stub, offline
+    uv run agenttwin-lab fix INC-0001 --run ... --adapter real-claude-via-litellm  # Groq, free tier
     uv run agenttwin-lab deploy runs/.../fixes/INC-0001-<run>/fix.json  # a person approves
     uv run agenttwin-lab rollback
     uv run agenttwin-lab loop --days 2 --fixer stub:honest --approve local
@@ -19,7 +20,7 @@ from typing import Any
 from agenttwin import load
 
 from agenttwin_lab.brief import find, load_context, render
-from agenttwin_lab.compose import APPROVALS, GATE_BINDING, REFERENCE, default_lab
+from agenttwin_lab.compose import APPROVALS, FIXERS, GATE_BINDING, REFERENCE, default_lab
 from agenttwin_lab.day import run_day
 from agenttwin_lab.fixconfig import CONFIG, load_config
 from agenttwin_lab.plan import load_plan
@@ -69,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     fix.add_argument("--run", type=Path, required=True, help="the day's run directory")
     fix.add_argument("--seed", type=int, default=None)
     fix.add_argument("--config", type=Path, default=CONFIG)
-    fix.add_argument("--adapter", choices=["stub", "real-claude"], default=None)
+    fix.add_argument("--adapter", choices=list(FIXERS), default=None)
     fix.add_argument("--fixture", default=None, help="stub only: honest | gaming | spec-gamer")
     fix.add_argument("--gates", choices=["incident-scenarios", "four-gates"], default=None)
     fix.add_argument("--max-turns", type=int, default=None)
@@ -94,7 +95,11 @@ def main(argv: list[str] | None = None) -> int:
     loop.add_argument("--days", type=int, default=2)
     loop.add_argument("--seed", type=int, default=7)
     loop.add_argument("--repeat", type=int, default=1, metavar="K", help="k loops: pass^k")
-    loop.add_argument("--fixer", default="stub:honest", help="stub:<fixture> or real-claude")
+    loop.add_argument(
+        "--fixer",
+        default="stub:honest",
+        help="stub:<fixture>, real-claude or real-claude-via-litellm",
+    )
     loop.add_argument("--approve", choices=APPROVALS, default="local")
     loop.add_argument("--i-am-a-test", action="store_true",
                       help="allow --approve auto-for-tests outside pytest; the record says so")

@@ -1,10 +1,14 @@
 """The fixer's executable, behind the `FixerAgent` port: Claude Code headless.
 
-Two adapters, one command line:
+Three adapters, one command line:
 
 - `RealClaude` runs the installed `claude` CLI. It needs `ANTHROPIC_API_KEY` in
   the environment, read from there and never from a file, and refuses to start
   without it.
+- `ClaudeViaProxy` (`real-claude-via-litellm`) runs the same CLI with the
+  same flags, its model served by a local LiteLLM proxy in front of Groq's
+  free tier (`model_proxy.py`); no Anthropic key. See its docstring for the
+  environment it sets and the two flags it adds for a small context.
 - `StubClaude` runs `python -m agenttwin_lab.stub_claude` with **the same
   arguments**. The stub parses them with the real CLI's flag names (an unknown
   flag is an error, as it is for `claude`), replays a canned stream-json
@@ -68,7 +72,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from agenttwin_lab.ports import FixerCall, FixerRun
+from agenttwin_lab.ports import FixerCall, FixerRun, ModelProxy, ProxyEndpoint
 
 KEY = "ANTHROPIC_API_KEY"
 VERIFIED_ON = "2.1.241"
@@ -86,9 +90,13 @@ class FixerUnavailable(Exception):
     """The adapter cannot run: no key, no executable, no fixture."""
 
 
-def argv(executable: Sequence[str], call: FixerCall, *, model: str | None) -> list[str]:
-    """The command line, identical for both adapters. The prompt is not on it:
-    it goes on stdin, so it is never in a process listing or the record's argv."""
+def argv(
+    executable: Sequence[str], call: FixerCall, *, model: str | None, extra: Sequence[str] = ()
+) -> list[str]:
+    """The command line, identical for every adapter. The prompt is not on it:
+    it goes on stdin, so it is never in a process listing or the record's argv.
+    `extra` is what a route adds after the shared flags (the proxied route's
+    short system prompt and tool list)."""
     out = [
         *executable,
         "-p",
@@ -113,6 +121,7 @@ def argv(executable: Sequence[str], call: FixerCall, *, model: str | None) -> li
         out += ["--add-dir", str(d)]
     if model:
         out += ["--model", model]
+    out += list(extra)
     return out
 
 
@@ -177,7 +186,12 @@ def settings(
     return out
 
 
-def _execute(command: list[str], call: FixerCall, env: Mapping[str, str]) -> FixerRun:
+def _execute(
+    command: list[str],
+    call: FixerCall,
+    env: Mapping[str, str],
+    route: Mapping[str, object] | None = None,
+) -> FixerRun:
     started = time.monotonic()
     call.transcript.parent.mkdir(parents=True, exist_ok=True)
     with call.transcript.open("w") as out:
@@ -197,11 +211,18 @@ def _execute(command: list[str], call: FixerCall, env: Mapping[str, str]) -> Fix
         transcript=call.transcript,
         stderr=done.stderr[-4000:],
         duration_s=round(time.monotonic() - started, 3),
+        route=dict(route or {}),
     )
 
 
+UPSTREAM_KEYS = ("GROQ_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY")
+"""Keys of other providers: never in the fixer's environment, where any shell
+command it runs could print them."""
+
+
 def _base_env(extra: Mapping[str, str]) -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if k not in (KEY, "CLAUDE_CODE_SIMPLE")}
+    drop = {KEY, "CLAUDE_CODE_SIMPLE", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", *UPSTREAM_KEYS}
+    env = {k: v for k, v in os.environ.items() if k not in drop}
     # Frozen: nothing the fixer runs rewrites a lock file, so the diff is the
     # fixer's change and not uv's.
     env["UV_FROZEN"] = "1"
@@ -276,6 +297,131 @@ class StubClaude:
         return _execute(argv(list(self.executable), call, model=self.model), call, env)
 
 
+SMALL_SYSTEM_PROMPT = """\
+You are a coding agent working headless on a brief. Act through your tools;
+nobody will answer questions. Your working directory is {cwd}. Other
+directories you may use: {add_dirs}. Shell commands not allowed by your
+settings are refused; do not retry a refused command another way. Read only
+what you need, in small ranges: your context is small. When you are done,
+reply with the pull request text the brief asks for."""
+"""The proxied route's system prompt. Claude Code's own is about 15,700 tokens
+with every tool (measured through the proxy, 13 Oct 2026); Groq's free tier
+refuses any request over 8,000 tokens a minute, so this route replaces it
+(`--system-prompt`) and keeps six tools (`--tools`): about 2,240 tokens before
+the brief. Claude Code's environment section (the working directory) goes with
+the default prompt, so it is restated here."""
+
+ROUTE_TOOLS = ("Read", "Edit", "Write", "Bash", "Glob", "Grep")
+MODEL_ENV = (
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+)
+"""Every model name Claude Code may ask for on its own (the background and
+small-fast calls, subagents), mapped to the proxy's one model, so nothing
+reaches for a Claude model the proxy does not serve."""
+
+
+@dataclass
+class ClaudeViaProxy:
+    """Claude Code, headless, with its model served by a local proxy.
+
+    The harness is the one `RealClaude` runs (the same `argv`, settings,
+    hooks and environment); what changes is where the model is: Claude Code
+    is pointed at the proxy (`ANTHROPIC_BASE_URL`, the per-run token as
+    `ANTHROPIC_AUTH_TOKEN`), asks for `model` by its alias, and gets the
+    upstream model behind it. Two flags are added for a small context
+    (`--system-prompt`, `--tools`) and two limits on tool output
+    (`CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS`, `BASH_MAX_OUTPUT_LENGTH`).
+    `ANTHROPIC_API_KEY` is never set: no Anthropic key is used or needed."""
+
+    proxy: ModelProxy
+    model: str
+    provider: str
+    upstream: str
+    executable: str | tuple[str, ...] = "claude"
+    """The CLI: `claude`, or (in the tests) the stub's command."""
+    tier: str = "free"
+    small_context: bool = True
+    tools: tuple[str, ...] = ROUTE_TOOLS
+    system_prompt: str = SMALL_SYSTEM_PROMPT
+    file_read_max_tokens: int | None = 1500
+    bash_max_output_chars: int | None = 6000
+    name: str = "real-claude-via-litellm"
+
+    @property
+    def command(self) -> list[str]:
+        return [self.executable] if isinstance(self.executable, str) else list(self.executable)
+
+    def describe(self) -> dict[str, object]:
+        try:
+            version = (
+                subprocess.run(
+                    [*self.command, "--version"], capture_output=True, text=True, check=False
+                ).stdout.strip()
+                or "unknown"
+            )
+        except OSError:
+            version = "not installed"
+        return {
+            "adapter": self.name,
+            "executable": " ".join(self.command),
+            "model": self.model,
+            "provider": self.provider,
+            "upstream_model": self.upstream,
+            "route": f"claude-code -> {self.proxy.name} proxy -> {self.provider}",
+            **self.proxy.describe(),
+            "version": version,
+            "flags_verified_on": VERIFIED_ON,
+            "tier": self.tier,
+            "spend_usd": 0.0 if self.tier == "free" else None,
+            "small_context": self.small_context,
+            "tools": list(self.tools) if self.small_context else "default",
+        }
+
+    def extra_args(self, call: FixerCall) -> list[str]:
+        if not self.small_context:
+            return []
+        prompt = self.system_prompt.format(
+            cwd=call.cwd, add_dirs=", ".join(map(str, call.add_dirs)) or "none"
+        )
+        return ["--system-prompt", prompt, "--tools", ",".join(self.tools)]
+
+    def env(self, call: FixerCall, endpoint: ProxyEndpoint) -> dict[str, str]:
+        env = _base_env(call.env)
+        env["ANTHROPIC_BASE_URL"] = endpoint.base_url
+        env["ANTHROPIC_AUTH_TOKEN"] = endpoint.token
+        for name in MODEL_ENV:
+            env[name] = self.model
+        if self.file_read_max_tokens:
+            env["CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS"] = str(self.file_read_max_tokens)
+        if self.bash_max_output_chars:
+            env["BASH_MAX_OUTPUT_LENGTH"] = str(self.bash_max_output_chars)
+        return env
+
+    def run(self, call: FixerCall) -> FixerRun:
+        from agenttwin_lab.model_proxy import ProxyUnavailable
+
+        workdir = call.transcript.parent / f"proxy-{call.attempt}"
+        command = argv(self.command, call, model=self.model, extra=self.extra_args(call))
+        try:
+            with self.proxy.serve(workdir) as endpoint:
+                ran = _execute(command, call, self.env(call, endpoint))
+        except ProxyUnavailable as exc:
+            raise FixerUnavailable(str(exc)) from exc
+        route = {"proxy_dir": workdir.name, **self.proxy.last}
+        return FixerRun(
+            argv=ran.argv,
+            exit_code=ran.exit_code,
+            transcript=ran.transcript,
+            stderr=ran.stderr,
+            duration_s=ran.duration_s,
+            route=route,
+        )
+
+
 # --------------------------------------------------------------------------- reading a stream
 
 FILE_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
@@ -303,8 +449,25 @@ class Stream:
     init: dict[str, Any] = field(default_factory=dict)
     tool_uses: list[ToolUse] = field(default_factory=list)
     result: dict[str, Any] = field(default_factory=dict)
+    retries: list[dict[str, Any]] = field(default_factory=list)
+    """Claude Code's `api_retry` events: a rate limit or an overload waited out."""
+    compactions: int = 0
     events: int = 0
     unparsed: int = 0
+
+    def rate_limit(self) -> dict[str, Any]:
+        """The waits, for the fix record: how many, how long, for which status."""
+        by_status: dict[str, int] = {}
+        for r in self.retries:
+            key = str(r.get("error_status"))
+            by_status[key] = by_status.get(key, 0) + 1
+        return {
+            "api_retries": len(self.retries),
+            "retry_wait_s": round(
+                sum(float(r.get("retry_delay_ms") or 0) for r in self.retries) / 1000, 3
+            ),
+            "by_status": by_status,
+        }
 
     @property
     def final_text(self) -> str:
@@ -338,6 +501,10 @@ def read_stream(path: Path) -> Stream:
         kind = event.get("type")
         if kind == "system" and event.get("subtype") == "init":
             stream.init = event
+        elif kind == "system" and event.get("subtype") == "api_retry":
+            stream.retries.append(event)
+        elif kind == "system" and event.get("subtype") == "compact_boundary":
+            stream.compactions += 1
         elif kind in ("assistant", "user"):
             for block in (event.get("message") or {}).get("content") or []:
                 if not isinstance(block, dict):
@@ -367,6 +534,11 @@ def read_stream(path: Path) -> Stream:
 
 
 __all__ = [
+    "MODEL_ENV",
+    "ROUTE_TOOLS",
+    "SMALL_SYSTEM_PROMPT",
+    "UPSTREAM_KEYS",
+    "ClaudeViaProxy",
     "ENV",
     "FILE_TOOLS",
     "KEY",

@@ -6,16 +6,18 @@ different argument here, never a branch somewhere else.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from agenttwin import load_binding
 
 from agenttwin_lab.approval import AutoForTests, GitHubEnvironment, LocalApproval
-from agenttwin_lab.claude_code import RealClaude, StubClaude
+from agenttwin_lab.claude_code import ROUTE_TOOLS, ClaudeViaProxy, RealClaude, StubClaude
 from agenttwin_lab.day import Lab
 from agenttwin_lab.fixconfig import FixerConfig
 from agenttwin_lab.fixgates import FourGates, IncidentScenarios
+from agenttwin_lab.model_proxy import LiteLLMProxy
 from agenttwin_lab.plan import DayPlan
 from agenttwin_lab.population import FakerPopulation
 from agenttwin_lab.ports import Approval, FixerAgent, FixGates
@@ -51,6 +53,37 @@ def default_lab(plan: DayPlan, *, binding: str = GATE_BINDING, agent_root: Path 
 
 
 STUBS = HERE / "fixer" / "stubs"
+FIXERS = ("stub", "real-claude", "real-claude-via-litellm")
+
+
+def via_litellm(options: Mapping[str, Any], base: Path) -> ClaudeViaProxy:
+    """Claude Code with its model behind a local LiteLLM proxy (Groq first)."""
+    proxy_opts = dict(options.get("proxy") or {})
+    key_file = options.get("key_file")
+    proxy = LiteLLMProxy(
+        alias=options["model"],
+        upstream=options["upstream"],
+        key_env=options.get("key_env", "GROQ_API_KEY"),
+        key_file=(base / key_file).resolve() if key_file else None,
+        **{
+            k: v
+            for k, v in proxy_opts.items()
+            if k in ("package", "host", "port", "start_timeout_s")
+        },
+    )
+    limits = dict(options.get("small_context") or {})
+    return ClaudeViaProxy(
+        proxy=proxy,
+        model=options["model"],
+        provider=options.get("provider", "groq"),
+        upstream=options["upstream"],
+        executable=options.get("executable", "claude"),
+        tier=options.get("tier", "free"),
+        small_context=bool(limits.get("on", True)),
+        tools=tuple(limits.get("tools") or ROUTE_TOOLS),
+        file_read_max_tokens=limits.get("file_read_max_tokens", 1500),
+        bash_max_output_chars=limits.get("bash_max_output_chars", 6000),
+    )
 
 
 def default_fixer(
@@ -72,8 +105,10 @@ def default_fixer(
         agent = RealClaude(
             executable=options.get("executable", "claude"), model=options.get("model")
         )
+    elif chosen == "real-claude-via-litellm":
+        agent = via_litellm(options, config.source.parent)
     else:
-        raise ValueError(f"no fixer adapter {chosen!r}: stub or real-claude")
+        raise ValueError(f"no fixer adapter {chosen!r}: {', '.join(FIXERS)}")
     out = config.workdir / "gate-reports"
     out.mkdir(parents=True, exist_ok=True)
     gate_kind = gates or config.gates
@@ -105,6 +140,7 @@ def approval(name: str, *, i_am_a_test: bool = False) -> Approval:
 
 __all__ = [
     "APPROVALS",
+    "FIXERS",
     "GATE_BINDING",
     "MINTED",
     "REFERENCE",
@@ -112,4 +148,5 @@ __all__ = [
     "approval",
     "default_fixer",
     "default_lab",
+    "via_litellm",
 ]

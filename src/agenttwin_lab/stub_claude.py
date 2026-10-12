@@ -72,6 +72,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--strict-mcp-config", action="store_true")
     p.add_argument("--include-hook-events", action="store_true")
     p.add_argument("--model")
+    p.add_argument("--system-prompt")
+    p.add_argument("--tools")
     return p
 
 

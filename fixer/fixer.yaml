@@ -23,10 +23,33 @@ workdir: ../work                  # gitignored
 # The executable is a port. `stub` replays a canned transcript and diff;
 # `real-claude` runs Claude Code headless and needs ANTHROPIC_API_KEY in the
 # environment (never in a file).
+#
+# `real-claude-via-litellm` is the same Claude Code, same flags, settings and
+# hooks, with its model served by a local LiteLLM proxy (started with `uvx`
+# for each attempt and stopped after it) in front of Groq's free tier. No
+# Anthropic key. The Groq key is read at run time from the environment, else
+# from the one `GROQ_API_KEY=` line of `key_file`, and handed to the proxy
+# process only. Groq's free tier refuses any request over 8,000 tokens a
+# minute, so `small_context` replaces Claude Code's ~15,700-token system prompt
+# with a short one and keeps six tools; switch it off for a provider with room.
 agent:
   adapter: stub
   stub: {fixture: honest}
   real-claude: {executable: claude, model: opus}
+  real-claude-via-litellm:
+    executable: claude
+    model: groq-gpt-oss-120b          # the name Claude Code asks for (an alias the proxy serves)
+    provider: groq
+    upstream: groq/openai/gpt-oss-120b
+    tier: free                        # spend recorded as 0 USD
+    key_env: GROQ_API_KEY
+    key_file: ../../reference-agent/.env
+    proxy: {package: "litellm[proxy]==1.105.0", host: 127.0.0.1}
+    small_context:
+      on: true
+      tools: [Read, Edit, Write, Bash, Glob, Grep]
+      file_read_max_tokens: 1500
+      bash_max_output_chars: 6000
 
 limits:
   max_turns: 40                   # per attempt (claude --max-turns)

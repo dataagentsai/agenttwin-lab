@@ -8,7 +8,8 @@ knows only the protocols, and `compose.py` is the one place that names a tool.
 | `WallClock` | the agent process's wall clock follows the world's | time-machine (`wallclock.py`) |
 | `TurnTracer` | a trace id per turn, deterministic by seed | OpenTelemetry (`tracing.py`) |
 | `agenttwin.Binding` | the agent under test, in process | the reference agent's gate binding |
-| `FixerAgent` | the coding agent that fixes an incident | `real-claude` or `stub` |
+| `FixerAgent` | the coding agent fixing an incident | `real-claude`, `...-via-litellm`, `stub` |
+| `ModelProxy` | a local endpoint serving the fixer's model | LiteLLM in front of Groq |
 | `FixGates` | whether a fix is green | `incident-scenarios` or `four-gates` |
 | `Approval` | a person's yes to a deploy | `local`, `github`, `auto-for-tests` |
 """
@@ -119,6 +120,29 @@ class FixerRun:
     transcript: Path
     stderr: str
     duration_s: float
+    route: Mapping[str, object] = field(default_factory=dict)
+    """What the adapter knows of this run beyond the transcript: for a proxied
+    model, the proxy's port, readiness and what its log said about limits."""
+
+
+@dataclass(frozen=True)
+class ProxyEndpoint:
+    """Where the fixer reaches its model, and the per-run token it presents."""
+
+    base_url: str
+    token: str
+
+
+class ModelProxy(Protocol):
+    """A local endpoint for the fixer's model, started for one run and
+    stopped after it, whatever happens."""
+
+    name: str
+    last: dict[str, object]
+
+    def describe(self) -> dict[str, object]: ...
+
+    def serve(self, workdir: Path) -> AbstractContextManager[ProxyEndpoint]: ...
 
 
 class FixerAgent(Protocol):
@@ -210,7 +234,9 @@ __all__ = [
     "FixerRun",
     "GateResult",
     "Happening",
+    "ModelProxy",
     "Population",
+    "ProxyEndpoint",
     "Rows",
     "Schedule",
     "Turn",

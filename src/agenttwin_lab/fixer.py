@@ -575,9 +575,13 @@ class Fixer:
                         for k in (
                             "subtype", "is_error", "num_turns", "total_cost_usd",
                             "usage", "modelUsage", "duration_ms", "duration_api_ms",
+                            "terminal_reason", "api_error_status",
                         )
                         if k in stream.result
                     },  # fmt: skip
+                    "rate_limit": stream.rate_limit(),
+                    "compactions": stream.compactions,
+                    "route": dict(ran.route),
                     "tool_uses": len(stream.tool_uses),
                     "pr_text": stream.final_text,
                     "denied": sum(1 for t in now_tried if t.get("denied")),
@@ -626,6 +630,9 @@ class Fixer:
         turns = [a["result"].get("num_turns") for a in attempts if a.get("started")]
         costs = [a["result"].get("total_cost_usd") for a in attempts if a.get("started")]
         reported = [c for c in costs if isinstance(c, (int, float))]
+        described = self.agent.describe()
+        free = described.get("spend_usd")
+        spend = free if isinstance(free, float) else None
         record: dict[str, Any] = {
             "format": FIX_FORMAT,
             "incident": {
@@ -638,7 +645,7 @@ class Fixer:
             },
             "run": run,
             "branch": branch,
-            "agent": self.agent.describe(),
+            "agent": described,
             "model": next((a.get("model") for a in attempts if a.get("model")), None),
             "versions": {
                 "agenttwin": version("agenttwin"),
@@ -656,8 +663,13 @@ class Fixer:
             "gates_adapter": self.gates.name,
             "attempts": attempts,
             "turns": sum(t for t in turns if isinstance(t, int)) if turns else None,
-            "spend_usd": round(sum(reported), 6) if reported else None,
+            "spend_usd": spend
+            if spend is not None
+            else (round(sum(reported), 6) if reported else None),
             "spend_reported": bool(reported) and len(reported) == len(costs),
+            "spend_note": f"{described.get('tier')} tier ({described.get('provider')}): no charge"
+            if spend is not None else None,
+            "rate_limit": rate_limits(attempts),
             "attempted_changes": tried,
             "refused": [t for t in tried if t.get("denied")],
             "layers": {
@@ -828,6 +840,21 @@ def _passed(scenarios: object) -> bool | None:
     return bool(scenarios.get("passed")) if isinstance(scenarios, dict) else None
 
 
+def rate_limits(attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    """The rate-limit waits over every attempt: Claude Code's retries (from the
+    transcript) and what a proxy's log said (from the route)."""
+
+    def total(where: str, key: str) -> float:
+        return sum(float(a.get(where, {}).get(key, 0) or 0) for a in attempts)
+
+    return {
+        "api_retries": int(total("rate_limit", "api_retries")),
+        "retry_wait_s": round(total("rate_limit", "retry_wait_s"), 3),
+        "proxy_rate_limit_lines": int(total("route", "rate_limit_lines")),
+        "proxy_too_large_lines": int(total("route", "too_large_lines")),
+    }
+
+
 def retry_note(n: int, verdict: dict[str, Any]) -> str:
     reasons = "\n".join(f"- {r}" for r in verdict["reasons_not_fixed"])
     return (
@@ -864,8 +891,10 @@ def pr_body(record: dict[str, Any]) -> str:
         f"- Needs a person's approval: "
         f"{[f['repo'] + '/' + f['path'] for f in record['approval_required']] or 'none'}",
         f"- Turns {record['turns']}, spend {record['spend_usd']} USD "
-        f"({'reported by the CLI' if record['spend_reported'] else 'not reported'}), "
-        f"fixer {record['agent'].get('adapter')}",
+        f"({record.get('spend_note') or spend_source(record)}), "
+        f"fixer {record['agent'].get('adapter')}"
+        + (f" ({record['agent'].get('route')}, {record['agent'].get('upstream_model')})"
+           if record["agent"].get("route") else ""),
         "",
         "---",
         "",
@@ -873,6 +902,10 @@ def pr_body(record: dict[str, Any]) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def spend_source(record: dict[str, Any]) -> str:
+    return "reported by the CLI" if record["spend_reported"] else "not reported"
 
 
 def refusal_line(refusals: dict[str, Any]) -> str:

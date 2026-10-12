@@ -648,3 +648,77 @@ def test_the_transcript_is_kept_whole(lab: dict[str, Path], day_run: Path) -> No
     assert "--bare" not in argv_, "--bare skips hooks"
     assert argv_[argv_.index("--setting-sources") + 1] == "", "no user, project or local settings"
     assert "# Fix" not in " ".join(argv_), "the prompt goes on stdin, never the command line"
+
+
+# ----------------------------------------------------------------------- the Groq route, recorded
+
+# (row, what the fix record holds when the honest stub runs behind the proxied route)
+ROUTE_RECORD = [
+    ("the adapter", lambda r: r["agent"]["adapter"] == "real-claude-via-litellm"),
+    ("the route", lambda r: r["agent"]["route"] == "claude-code -> litellm proxy -> groq"),
+    ("the provider and upstream", lambda r: (r["agent"]["provider"], r["agent"]["upstream_model"])
+     == ("groq", "groq/openai/gpt-oss-120b")),
+    ("the proxy version", lambda r: r["agent"]["proxy_version"] == "1.105.0"),
+    ("the model asked for", lambda r: "--model" in r["attempts"][0]["argv"]
+     and "groq-gpt-oss-120b" in r["attempts"][0]["argv"]),
+    ("spend is 0, free tier",
+     lambda r: r["spend_usd"] == 0.0 and "free tier (groq)" in r["spend_note"]),
+    ("rate-limit waits recorded", lambda r: set(r["rate_limit"]) >= {"api_retries", "retry_wait_s",
+                                                                     "proxy_rate_limit_lines"}),
+    ("the proxy's run is in the attempt",
+     lambda r: r["attempts"][0]["route"]["proxy_dir"] == "proxy-1"),
+    ("the same harness: hooks and settings", lambda r: "--settings" in r["attempts"][0]["argv"]
+     and r["layers"]["on"] == ["permissions", "hook", "read-only", "runner", "pre-commit"]),
+    ("the layers still judge it", lambda r: r["outcome"] == "fixed"),
+    ("the PR body names the route", lambda r: "claude-code -> litellm proxy -> groq"
+     in (r["_run"] / "fixes" / f"{INCIDENT}-test-route" / "pr-body.md").read_text()),
+]  # fmt: skip
+
+
+@pytest.fixture(scope="module")
+def routed(lab: dict[str, Path], day_run: Path) -> dict[str, Any]:
+    """The honest stub behind `real-claude-via-litellm`, with a fake proxy."""
+    import os
+    import sys
+    from contextlib import contextmanager
+
+    from agenttwin_lab.claude_code import ClaudeViaProxy
+    from agenttwin_lab.ports import ProxyEndpoint
+
+    class FakeProxy:
+        name, last = "litellm", {}
+
+        def describe(self) -> dict[str, object]:
+            return {"proxy": "litellm", "proxy_version": "1.105.0"}
+
+        @contextmanager
+        def serve(self, workdir: Path) -> Any:
+            yield ProxyEndpoint(base_url="http://127.0.0.1:4999", token="sk-run")
+
+    run = lab["base"] / "run-route"
+    sh(lab["base"], "cp", "-R", str(day_run), str(run))
+    fixer = default_fixer(load_config(lab["config"]), adapter="stub", fixture="honest")
+    fixer.agent = ClaudeViaProxy(
+        proxy=FakeProxy(), model="groq-gpt-oss-120b", provider="groq",
+        upstream="groq/openai/gpt-oss-120b",
+        executable=(sys.executable, "-m", "agenttwin_lab.stub_claude"),
+    )  # fmt: skip
+    saved = {k: os.environ.get(k) for k in ("AGENTTWIN_STUB_FIXTURE", "AGENTTWIN_STUB_ATTEMPT")}
+    os.environ.update(AGENTTWIN_STUB_FIXTURE=str(STUBS / "honest"), AGENTTWIN_STUB_ATTEMPT="1")
+    try:
+        record = fixer.fix(run, INCIDENT, run_id="test-route")
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    record["_run"] = run
+    return record
+
+
+@pytest.mark.parametrize(("row", "holds"), ROUTE_RECORD, ids=[x[0] for x in ROUTE_RECORD])
+def test_the_fix_record_names_the_route_and_model(
+    routed: dict[str, Any], row: str, holds: Any
+) -> None:
+    assert holds(routed)
