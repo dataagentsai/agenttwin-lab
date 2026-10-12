@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -473,6 +474,58 @@ class Stream:
     def final_text(self) -> str:
         return str(self.result.get("result") or "")
 
+    @property
+    def error(self) -> dict[str, Any] | None:
+        """How the run ended, when it ended on an error; None for a normal end."""
+        return ended_on_error(self.result)
+
+    @property
+    def pr_text(self) -> str | None:
+        """The fixer's own closing words; None when the run ended on an error,
+        because then the result text is the error, not the fixer's."""
+        return None if self.error else self.final_text
+
+
+ERROR_MESSAGE_CHARS = 500
+SECRET = re.compile(r"\b(?:sk|gsk|xai)[-_][A-Za-z0-9_-]{8,}|\borg_[A-Za-z0-9]{8,}|Bearer\s+\S+")
+"""Anything key-shaped in an error text is masked; none is expected there."""
+SUBTYPE_KINDS = {"error_max_turns": "max_turns", "error_max_budget_usd": "max_budget"}
+
+
+def error_kind(subtype: str, text: str, status: object) -> str:
+    """The error's kind, from the result's subtype first, then its text and
+    status (with the proxy log's patterns: a request too large for the
+    per-minute ceiling comes back as a 429 too, so it is checked first)."""
+    from agenttwin_lab.model_proxy import RATE_LIMIT, TOO_LARGE
+
+    if subtype in SUBTYPE_KINDS:
+        return SUBTYPE_KINDS[subtype]
+    if TOO_LARGE.search(text) or status == 413:
+        return "request_too_large"
+    if RATE_LIMIT.search(text) or status == 429 or "Request rejected (429)" in text:
+        return "rate_limit"
+    if subtype == "error_during_execution" and not text.startswith("API Error"):
+        return "execution_error"
+    return "api_error"
+
+
+def ended_on_error(result: Mapping[str, Any]) -> dict[str, Any] | None:
+    """`{kind, subtype, status, message}` for a result event that is an error
+    (`is_error`, or an `error_*` subtype), else None."""
+    subtype = str(result.get("subtype") or "")
+    if not result.get("is_error") and not subtype.startswith("error"):
+        return None
+    errors = result.get("errors")
+    listed = "; ".join(str(e) for e in errors if e) if isinstance(errors, list) else ""
+    text = str(result.get("result") or "") or listed or subtype
+    status = result.get("api_error_status")
+    return {
+        "kind": error_kind(subtype, text, status),
+        "subtype": subtype or None,
+        "status": status,
+        "message": SECRET.sub("[masked]", text)[:ERROR_MESSAGE_CHARS],
+    }
+
 
 def _text(content: Any) -> str:
     if isinstance(content, str):
@@ -550,6 +603,8 @@ __all__ = [
     "ToolUse",
     "WRITE_MATCHER",
     "argv",
+    "ended_on_error",
+    "error_kind",
     "read_stream",
     "settings",
 ]

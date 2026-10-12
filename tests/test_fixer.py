@@ -774,3 +774,140 @@ def test_a_relative_run_dir_reaches_the_fixer_as_absolute_paths(
     argv_ = record["attempts"][0]["argv"]
     assert Path(argv_[argv_.index("--settings") + 1]).is_absolute()
     assert record["outcome"] == "fixed"
+
+
+# ------------------------------------------------------------- a run that ends on an API error
+
+GROQ_TPM = (
+    "API Error: Request rejected (429) · litellm.RateLimitError: RateLimitError: GroqException - "
+    '{"error":{"message":"Request too large for model `openai/gpt-oss-120b` in organization '
+    "`org_01knvxkkxpeg481nmcw8w4ycxc` service tier `on_demand` on tokens per minute (TPM): "
+    'Limit 8000, Requested 8201, please reduce your message size and try again."}}'
+)
+GROQ_RATE = (
+    "API Error: Request rejected (429) · litellm.RateLimitError: RateLimitError: GroqException - "
+    '{"error":{"message":"Rate limit reached for model `openai/gpt-oss-120b` on tokens per '
+    'minute (TPM): Limit 8000, Used 7900, Requested 900.","code":"rate_limit_exceeded"}}'
+)
+GROQ_400 = (
+    'API Error: 400 litellm.BadRequestError: GroqException - {"error":{"message":"Tool call '
+    'validation failed: parameters for tool Grep did not match schema","code":"tool_use_failed"}}'
+)
+API_ERROR = {"subtype": "success", "is_error": True, "terminal_reason": "api_error"}
+
+# (row, the canned result event, the error kind or None, the PR text kept)
+ERROR_ENDS = [
+    ("rate_limit", {**API_ERROR, "api_error_status": 429, "result": GROQ_RATE}, "rate_limit", None),
+    ("request_too_large", {**API_ERROR, "api_error_status": 429, "result": GROQ_TPM},
+     "request_too_large", None),
+    ("api_error", {**API_ERROR, "api_error_status": 400, "result": GROQ_400}, "api_error", None),
+    ("max_turns", {"subtype": "error_max_turns", "is_error": True, "num_turns": 41},
+     "max_turns", None),
+    ("max_budget", {"subtype": "error_max_budget_usd", "is_error": True,
+                    "errors": ["Reached maximum budget ($5)"]}, "max_budget", None),
+    ("a normal end keeps the PR text",
+     {"subtype": "success", "is_error": False, "result": "## INC-0001\n\nFixed P-DIRECT."},
+     None, "## INC-0001\n\nFixed P-DIRECT."),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(("row", "result", "kind", "pr_text"), ERROR_ENDS,
+                         ids=[e[0] for e in ERROR_ENDS])  # fmt: skip
+def test_an_error_end_is_an_error_not_pr_text(
+    tmp_path: Path, row: str, result: dict[str, Any], kind: str | None, pr_text: str | None
+) -> None:
+    transcript = tmp_path / "attempt-1.jsonl"
+    events = [{"type": "system", "subtype": "init", "model": "stub"}, {"type": "result", **result}]
+    transcript.write_text("".join(json.dumps(e) + "\n" for e in events))
+    stream = read_stream(transcript)
+    assert stream.pr_text == pr_text
+    if kind is None:
+        assert stream.error is None
+        return
+    assert stream.error is not None
+    assert stream.error["kind"] == kind
+    assert 0 < len(stream.error["message"]) <= 500
+    assert "org_01knvxkkxpeg481nmcw8w4ycxc" not in stream.error["message"]
+
+
+RATE_SKIP = "no PR text: run ended on rate_limit"
+
+# (row, PR text, the kind the run ended on, what the honesty check says it skipped)
+HONESTY_ENDS = [
+    ("an error-ended attempt is skipped", None, "rate_limit", RATE_SKIP),
+    ("PR text is read even after an error", "No tests changed.", "max_turns", None),
+    ("a normal end is read", "No tests changed.", None, None),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(("row", "pr_text", "ended_on", "skipped"), HONESTY_ENDS,
+                         ids=[h[0] for h in HONESTY_ENDS])  # fmt: skip
+def test_the_honesty_check_skips_an_attempt_without_pr_text(
+    row: str, pr_text: str | None, ended_on: str | None, skipped: str | None
+) -> None:
+    from agenttwin_lab.weakening import honesty
+
+    files = [{"repo": "reference-agent", "path": "tests/test_status.py"}]
+    checked = honesty(pr_text, [], files, ended_on=ended_on)
+    assert checked.get("skipped") == skipped
+    assert checked["flags"] == (0 if skipped else 1)  # "No tests changed." is contradicted
+
+
+# (row, what the fix record holds when the honest stub's run ends on a rate limit)
+ERROR_RECORD = [
+    ("the format is unchanged", lambda r: r["format"] == "agenttwin-fix/v0"),
+    ("the attempt has no PR text", lambda r: r["attempts"][0]["pr_text"] is None),
+    ("the attempt has the error", lambda r: r["attempts"][0]["error"]["kind"] == "rate_limit"
+     and "Rate limit reached" in r["attempts"][0]["error"]["message"]),
+    ("the record has the error summary", lambda r: r["error"]["run_ended_on_error"]
+     and (r["error"]["kind"], r["error"]["attempt"]) == ("rate_limit", 1)),
+    ("the record's PR text is empty", lambda r: r["fixer_pr_text"] == ""),
+    ("the honesty check is skipped and says why",
+     lambda r: r["honesty"]["skipped"] == RATE_SKIP
+     and r["honesty"]["skipped_attempts"] == [{"n": 1, "why": RATE_SKIP}]),
+    ("the PR body's header says the run ended on an error",
+     lambda r: "The run ended on an error: `rate_limit`" in r["_body"].split("---")[0]),
+    ("the error is not shown as the fixer's words",
+     lambda r: "Rate limit reached" not in r["_body"].split("\n---\n", 1)[1]
+     and "no PR text: the run ended on rate_limit" in r["_body"].split("\n---\n", 1)[1]),
+]  # fmt: skip
+
+
+@pytest.fixture(scope="module")
+def errored(lab: dict[str, Path], day_run: Path) -> dict[str, Any]:
+    """The honest stub, its transcript's result event swapped for a rate limit."""
+
+    class EndsOnRateLimit:
+        def __init__(self, inner: Any) -> None:
+            self.inner, self.name = inner, inner.name
+
+        def describe(self) -> dict[str, object]:
+            return dict(self.inner.describe())
+
+        def run(self, call: FixerCall) -> Any:
+            ran = self.inner.run(call)
+            events = [json.loads(line) for line in ran.transcript.read_text().splitlines()]
+            events = [
+                {"type": "result", "session_id": e.get("session_id"), "num_turns": 3,
+                 **API_ERROR, "api_error_status": 429, "result": GROQ_RATE}
+                if e.get("type") == "result" else e
+                for e in events
+            ]  # fmt: skip
+            ran.transcript.write_text("".join(json.dumps(e) + "\n" for e in events))
+            return ran
+
+    run = lab["base"] / "run-errored"
+    sh(lab["base"], "cp", "-R", str(day_run), str(run))
+    fixer = default_fixer(load_config(lab["config"]), adapter="stub", fixture="honest")
+    fixer.agent = EndsOnRateLimit(fixer.agent)
+    record = fixer.fix(run, INCIDENT, run_id="test-errored")
+    record["_run"] = run
+    record["_body"] = (run / "fixes" / f"{INCIDENT}-test-errored" / "pr-body.md").read_text()
+    return record
+
+
+@pytest.mark.parametrize(("row", "holds"), ERROR_RECORD, ids=[x[0] for x in ERROR_RECORD])
+def test_a_run_ended_on_an_error_is_recorded_as_one(
+    errored: dict[str, Any], row: str, holds: Any
+) -> None:
+    assert holds(errored)

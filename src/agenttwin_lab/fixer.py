@@ -551,7 +551,8 @@ class Fixer:
                 if config.layer("runner")
                 else []
             )
-            title = (stream.final_text.splitlines() or [f"{incident['id']} attempt {n}"])[0]
+            pr_text, error = stream.pr_text, stream.error
+            title = ((pr_text or "").splitlines() or [f"{incident['id']} attempt {n}"])[0]
             message = f"{incident['id']} attempt {n}: {title.lstrip('# ').strip()}"[:200]
             for name, tree in ws.trees.items():
                 sha, why = commit(tree, message, hooks_dir)
@@ -586,7 +587,8 @@ class Fixer:
                     "compactions": stream.compactions,
                     "route": dict(ran.route),
                     "tool_uses": len(stream.tool_uses),
-                    "pr_text": stream.final_text,
+                    "pr_text": pr_text,
+                    "error": error,
                     "denied": sum(1 for t in now_tried if t.get("denied")),
                     "reverted_by_runner": [e["path"] for e in secured if e["stopped"]],
                     "judged": verdict,
@@ -605,7 +607,12 @@ class Fixer:
         refusals = protect.summarise(out / "refusals.jsonl", ["permissions", *layers_on])
         fixer_pr_text = next((a["pr_text"] for a in reversed(attempts) if a.get("pr_text")), "")
         classified = classify_fix(ws, tried, changed)
-        honest = weakening.honesty(fixer_pr_text, classified["final"], changed)
+        ended = error_summary(attempts)
+        honest = weakening.honesty(
+            fixer_pr_text, classified["final"], changed,
+            ended_on=ended["kind"] if ended and ended["run_ended_on_error"] else None,
+        )  # fmt: skip
+        honest["skipped_attempts"] = skipped_attempts(attempts)
         reverted = [e for e in refusals["entries"] if e["layer"] == "runner"]
         why_person = []
         if [e for e in reverted if e["stopped"]]:
@@ -692,6 +699,7 @@ class Fixer:
             "honesty": honest,
             "commits": commits,
             "fixer_pr_text": fixer_pr_text,
+            "error": ended,
             "judged": verdict,
             "outcome": outcome,
             "why_a_person": why_person,
@@ -858,6 +866,48 @@ def rate_limits(attempts: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def skipped_attempts(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The attempts the honesty check cannot read: no PR text, an error end."""
+    return [
+        {"n": a["n"], "why": f"no PR text: run ended on {a['error']['kind']}"}
+        for a in attempts
+        if a.get("error") and not a.get("pr_text")
+    ]
+
+
+def error_summary(attempts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The record's top-level `error`: None when no attempt ended on one; else
+    the last such attempt's kind and message, and whether the run ended there."""
+    ended = [a for a in attempts if a.get("error")]
+    if not ended:
+        return None
+    last = ended[-1]
+    started = [a for a in attempts if a.get("started")]
+    return {
+        "run_ended_on_error": bool(started) and started[-1] is last,
+        "attempt": last["n"],
+        "kind": last["error"]["kind"],
+        "message": last["error"]["message"],
+        "attempts": [{"n": a["n"], "kind": a["error"]["kind"]} for a in ended],
+    }
+
+
+def error_lines(record: dict[str, Any]) -> list[str]:
+    """The PR body's note on an error end. The error is the lab's record of
+    the API's answer, quoted as such, never shown as the fixer's words."""
+    error = record.get("error")
+    if not error or not error.get("run_ended_on_error"):
+        return []
+    message = str(error.get("message") or "").replace("`", "'")
+    return [
+        f"**The run ended on an error: `{error['kind']}` (attempt {error['attempt']}).** "
+        "The lab recorded it; it is not the fixer's text:",
+        "",
+        f"> `{message}`",
+        "",
+    ]
+
+
 def retry_note(n: int, verdict: dict[str, Any]) -> str:
     reasons = "\n".join(f"- {r}" for r in verdict["reasons_not_fixed"])
     return (
@@ -867,12 +917,29 @@ def retry_note(n: int, verdict: dict[str, Any]) -> str:
 
 
 def pr_body(record: dict[str, Any]) -> str:
-    """The lab's header, then the fixer's own words, unedited."""
+    """The lab's header, then the fixer's own words, unedited; a run that
+    ended on an error says so in the header, and its error is not shown as
+    the fixer's words."""
     judged = record["judged"] or {}
     gates = judged.get("gates") or {}
     rerun = judged.get("rerun") or {}
+    error = record.get("error") or {}
+    honesty = record["honesty"]
+    honesty_line = (
+        f"- Honesty check: skipped ({honesty['skipped']})"
+        if honesty.get("skipped")
+        else f"- Honesty check: {honesty['flags']} flag(s) "
+        f"(claims {honesty['claims'] or 'none'}, "
+        f"undisclosed weakenings {len(honesty['undisclosed_weakenings'])})"
+    )
+    no_text = (
+        f"*(no PR text: the run ended on {error['kind']})*"
+        if error.get("run_ended_on_error")
+        else "*(the fixer wrote no PR description)*"
+    )
     lines = [
         f"<!-- {FIX_FORMAT}: {record['incident']['id']} run {record['run']} -->",
+        *error_lines(record),
         f"**Lab verdict: {record['outcome']}.** Incident `{record['incident']['id']}` "
         f"(`{record['incident']['rule']}`, root `{record['incident']['root']}`), "
         f"day `{record['incident']['day']}`.",
@@ -887,9 +954,7 @@ def pr_body(record: dict[str, Any]) -> str:
         f"- Refusal log: {refusal_line(record['refusals'])}",
         f"- Weakening, on the branch: {label_line(record['weakening']['summary']['final'])}; "
         f"tried: {label_line(record['weakening']['summary']['attempted'])}",
-        f"- Honesty check: {record['honesty']['flags']} flag(s) "
-        f"(claims {record['honesty']['claims'] or 'none'}, "
-        f"undisclosed weakenings {len(record['honesty']['undisclosed_weakenings'])})",
+        honesty_line,
         f"- Why a person: {'; '.join(record['why_a_person']) or 'nothing flagged'}",
         f"- Needs a person's approval: "
         f"{[f['repo'] + '/' + f['path'] for f in record['approval_required']] or 'none'}",
@@ -901,7 +966,7 @@ def pr_body(record: dict[str, Any]) -> str:
         "",
         "---",
         "",
-        record["fixer_pr_text"] or "*(the fixer wrote no PR description)*",
+        record["fixer_pr_text"] or no_text,
         "",
     ]
     return "\n".join(lines)
@@ -979,6 +1044,9 @@ def main_fix(args: argparse.Namespace) -> int:
     )
     print(f"refusals: {refusal_line(record['refusals'])}")
     print(f"weakening on the branch: {label_line(record['weakening']['summary']['final'])}")
+    error = record["error"]
+    if error and error["run_ended_on_error"]:
+        print(f"ended on an error: {error['kind']} (attempt {error['attempt']})")
     print(f"written to {args.run / 'fixes' / (record['incident']['id'] + '-' + record['run'])}")
     return 0 if record["outcome"] == "fixed" else 1
 
@@ -990,6 +1058,7 @@ __all__ = [
     "attempted",
     "classify_fix",
     "commit",
+    "error_summary",
     "fill_report",
     "files_changed",
     "main_fix",

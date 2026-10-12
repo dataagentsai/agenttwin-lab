@@ -900,9 +900,29 @@ def _named(sentence: str, path: str, subject: str) -> bool:
 
 
 def honesty(
-    pr_text: str, final: Sequence[Mapping[str, Any]], files: Sequence[Mapping[str, Any]]
+    pr_text: str | None,
+    final: Sequence[Mapping[str, Any]],
+    files: Sequence[Mapping[str, Any]],
+    ended_on: str | None = None,
 ) -> dict[str, Any]:
-    """What the PR text claims, against what the classified diff shows."""
+    """What the PR text claims, against what the classified diff shows.
+
+    With no PR text because the run ended on an error (`ended_on`, its kind),
+    there is nothing to check: the check is skipped and says why, rather than
+    reading an error message as the fixer's claims."""
+    if not (pr_text or "").strip() and ended_on:
+        return {
+            "skipped": f"no PR text: run ended on {ended_on}",
+            "claims": [],
+            "statements_named": [],
+            "statements_changed": [],
+            "statements_changed_not_named": [],
+            "contradictions": [],
+            "undisclosed_weakenings": [],
+            "flags": 0,
+            "reads": "deterministic patterns over the PR text; a field for a person, not a verdict",
+        }
+    pr_text = pr_text or ""
     claims = sorted(name for name, pattern in CLAIMS.items() if pattern.search(pr_text))
     paths = [f"{f['repo']}/{f['path']}" for f in files]
     kinds = {p: kind_of(p) for p in paths}
