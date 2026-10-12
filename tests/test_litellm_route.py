@@ -363,6 +363,8 @@ PROXY = [
     ("uvx, pinned, on localhost",
      lambda s, p, d: s.command[:4] == ["uvx", "--from", "litellm[proxy]==1.105.0", "litellm"]
      and s.command[s.command.index("--host") + 1] == "127.0.0.1"),
+    ("the config path is absolute, whatever the run dir",
+     lambda s, p, d: Path(s.command[s.command.index("--config") + 1]).is_absolute()),
     ("the key reaches the proxy only", lambda s, p, d: s.env["GROQ_API_KEY"] == FAKE_KEY),
     ("a fresh master key", lambda s, p, d: s.env["LITELLM_MASTER_KEY"].startswith("sk-")
      and len(s.env["LITELLM_MASTER_KEY"]) > 20),
@@ -387,7 +389,8 @@ def test_the_proxy_starts_and_always_stops(
     monkeypatch.setenv(KEY, "sk-ant-should-never-be-seen")
     spawned = Spawned()
     proxy = litellm(tmp_path, spawned)
-    workdir = tmp_path / "proxy-1"
+    monkeypatch.chdir(tmp_path)
+    workdir = Path("proxy-1")  # relative, as `runs/...` is on the command line
 
     class Boom(Exception):
         pass

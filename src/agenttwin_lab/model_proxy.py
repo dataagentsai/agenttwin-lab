@@ -176,6 +176,9 @@ class LiteLLMProxy:
             raise ProxyUnavailable(
                 f"{self.key_env} is in neither the environment nor {self.key_file}"
             )
+        # Absolute: the proxy runs in `workdir`, and a run directory is often
+        # given relative to the lab (`runs/...`).
+        workdir = workdir.resolve()
         workdir.mkdir(parents=True, exist_ok=True)
         config = workdir / "litellm.yaml"
         config.write_text(yaml.safe_dump(litellm_config(self.alias, self.upstream, self.key_env)))
