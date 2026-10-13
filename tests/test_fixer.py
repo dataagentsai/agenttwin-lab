@@ -133,7 +133,7 @@ def test_the_brief_has_every_evidence_field(day_run: Path, name: str, expected: 
 # (path into the AOAS, a fragment of what is there, or the error)
 STATEMENTS = [
     ("policies.P-DIRECT", "order status and refund status", None),
-    ("policies.escalation.on_request[id=lost-in-transit]", "lost in transit", None),
+    ("policies.escalation.on_request[id=lost-in-transit]", "lost or gone missing", None),
     ("state_machines.order_status.concurrent_writers", "carrier", None),
     ("policies.P-NOWHERE", None, "no 'P-NOWHERE'"),
     ("policies.escalation.on_request[id=nobody]", None, "no item with id"),

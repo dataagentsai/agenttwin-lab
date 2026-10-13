@@ -9,7 +9,7 @@ resolution-markers = [
 
 [[package]]
 name = "agent-harness"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "../reference-agent/packages/agent-harness" }
 dependencies = [
     { name = "fastapi" },
@@ -52,7 +52,7 @@ provides-extras = ["azure"]
 
 [[package]]
 name = "agenttwin"
-version = "0.12.0"
+version = "0.13.0"
 source = { editable = "../agenttwin" }
 dependencies = [
     { name = "httpx2" },
