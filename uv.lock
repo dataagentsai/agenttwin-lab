@@ -87,7 +87,7 @@ provides-extras = ["dev", "pairwise", "pyrit", "langwatch"]
 
 [[package]]
 name = "agenttwin-lab"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "agent-harness" },
@@ -1692,7 +1692,7 @@ wheels = [
 
 [[package]]
 name = "support-agent"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "../reference-agent" }
 dependencies = [
     { name = "agent-harness" },

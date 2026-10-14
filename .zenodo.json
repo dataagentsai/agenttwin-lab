@@ -1,0 +1,20 @@
+{
+  "title": "AgentTwin Lab: an agent runs simulated days in an AgentTwin world, and the world watches it",
+  "upload_type": "software",
+  "description": "A lab around AgentTwin: the agent under test runs whole simulated days, in process, against a declared world with a generated population, customers arriving on a curve and incidents on the world's calendar, while the world judges every action and reply as it happens and raises each violation as an incident with its evidence. Part of Clean AI Engineering.",
+  "creators": [
+    {
+      "affiliation": "DataAgents.ai",
+      "name": "Choudhary, Basant"
+    }
+  ],
+  "keywords": [
+    "AI agents",
+    "simulation",
+    "agent evaluation",
+    "runtime monitoring",
+    "long-running agents",
+    "digital twin"
+  ],
+  "license": "Apache-2.0"
+}

@@ -2,7 +2,7 @@
 
 **An agent runs simulated days in an AgentTwin world, and the world watches it.**
 
-**Status: 0.3.0, 11 October 2026, a working draft.** One simulated day runs
+**Status: 0.4.0, 14 October 2026, a working draft.** One simulated day runs
 unattended against the reference support agent, in process, on a laptop: a
 generated population, customers arriving on a curve, an incident on the
 world's calendar, and a monitor that raises it with its evidence. A clean
