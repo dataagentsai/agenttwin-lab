@@ -4,6 +4,7 @@ type: software
 title: "AgentTwin Lab: an agent runs simulated days in an AgentTwin world, and the world watches it"
 version: "0.4.0"
 date-released: "2026-10-14"
+doi: "10.5281/zenodo.23366521"
 authors:
   - given-names: Basant
     family-names: Choudhary

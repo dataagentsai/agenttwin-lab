@@ -1,5 +1,7 @@
 # AgentTwin Lab
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23366521.svg)](https://doi.org/10.5281/zenodo.23366521)
+
 **An agent runs simulated days in an AgentTwin world, and the world watches it.**
 
 **Status: 0.4.0, 14 October 2026, a working draft.** One simulated day runs
