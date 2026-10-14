@@ -11,7 +11,7 @@ world's calendar, and a monitor that raises it with its evidence. A clean
 world's day raises nothing. The fixer harness (3.4) turns an incident into a
 brief, runs a headless coding agent on it in git worktrees, and records
 everything it tried; until the owner's API key exists it runs against a stub.
-Protected paths are hardened in five layers, each logging what it stopped, and
+Protected paths are hardened in six layers, each logging what it stopped, and
 every edit the fixer made or tried is classified as weakening or not (3.5). A
 fix the lab allows reaches production only when a person approves it, through
 the lab's own release pointer (3.6), and the whole loop — day, fix, approve,
